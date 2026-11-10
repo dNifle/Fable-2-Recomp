@@ -52,6 +52,14 @@ REXCVAR_DEFINE_BOOL(fit_game_to_window, true, "Display",
                     "shows a wider view) and stretch the frame to fill the window. "
                     "false = original 16:9 with letterboxing");
 
+REXCVAR_DEFINE_BOOL(experimental_ultrawide_fit, false, "Display",
+                    "EXPERIMENTAL: also fit the game to non-16:9 fullscreen/"
+                    "borderless output (ultrawide). The widened framing shows "
+                    "content the 16:9 view keeps off-screen (e.g. the title "
+                    "screen's side art), so fullscreen output is pinned to 16:9 "
+                    "unless this is on. Windowed windows always follow their "
+                    "shape.");
+
 namespace fable2::fitwindow {
 
 inline constexpr uint32_t kAspectAddress = 0x8209FE7C;    // 16/9 originally
@@ -100,11 +108,10 @@ inline void Store(uint32_t* host, float value) {
 inline void SetPresenterCvar(std::string_view name, std::string_view value) {
   if (rex::cvar::GetFlagByName(name) == value) return;
   if (rex::cvar::SetFlagByName(name, value)) {
-    REXSYS_INFO("[fit-window] set {} = {} so the frame fills the window", name,
-                value);
+    REXSYS_INFO("[fit-window] set {} = {}", name, value);
   } else {
-    REXSYS_WARN("[fit-window] could not set {} = {}; the frame may be "
-                "letterboxed",
+    REXSYS_WARN("[fit-window] could not set {} = {}; the output may be "
+                "sized wrong",
                 name, value);
   }
 }
@@ -135,6 +142,32 @@ inline bool WriteGuestAspect(float aspect) {
 
 // Writes the aspect for a surface of width x height pixels. Safe to call from
 // any thread once Install() has succeeded; does nothing before that.
+//
+// Fullscreen (and borderless) output is pinned to 16:9 - the game is only
+// intended to be rendered 16:9, and the widened framing shows content the
+// 16:9 view keeps off-screen (like the title screen's side art). Opt out with
+// experimental_ultrawide_fit, or force any shape with `f2 ws aspect` (a
+// deliberate console override always wins). Windowed windows keep following
+// their shape.
+inline bool PinOutput16x9() {
+  rex::ui::Window* window = detail::g_window.load();
+  if (!window || !window->IsFullscreen()) return false;
+  if (REXCVAR_GET(experimental_ultrawide_fit)) return false;
+  if (detail::g_forced_aspect.load() > 0.0f) return false;
+  return true;
+}
+
+// Points the presenter at the whole window and picks the matching output
+// mode: letterboxed 16:9 when pinned, stretched to the window shape when the
+// fit may widen the image. No-op while the fit is off (SetEnabled(false)
+// returns the presenter cvars to their defaults).
+inline void SyncPresenterMode() {
+  if (!REXCVAR_GET(fit_game_to_window)) return;
+  detail::SetPresenterCvar("present_letterbox", PinOutput16x9() ? "true" : "false");
+  detail::SetPresenterCvar("present_safe_area_x", "100");
+  detail::SetPresenterCvar("present_safe_area_y", "100");
+}
+
 inline void ApplySize(uint32_t width, uint32_t height) {
   uint32_t* aspect_ptr = detail::g_aspect.load();
   uint32_t* reference_ptr = detail::g_reference.load();
@@ -144,6 +177,7 @@ inline void ApplySize(uint32_t width, uint32_t height) {
   const float forced = detail::g_forced_aspect.load();
   float aspect = std::clamp(forced > 0.0f ? forced : float(width) / float(height),
                             kMinAspect, kMaxAspect);
+  if (forced <= 0.0f && PinOutput16x9()) aspect = kOriginalAspect;
   float reference = aspect * 0.75f;
   // A 16:9 window gets the game's own constants back bit for bit.
   if (std::fabs(aspect - kOriginalAspect) < 0.005f) {
@@ -228,9 +262,7 @@ inline void Install(rex::memory::Memory* memory, rex::ui::Window* window) {
   detail::g_aspect.store(aspect_ptr);
   detail::g_reference.store(reference_ptr);
 
-  detail::SetPresenterCvar("present_letterbox", "false");
-  detail::SetPresenterCvar("present_safe_area_x", "100");
-  detail::SetPresenterCvar("present_safe_area_y", "100");
+  SyncPresenterMode();
   ui::Install(memory);
 
   if (window) {
@@ -295,9 +327,7 @@ inline bool SetEnabled(bool on) {
       Install(detail::g_memory.load(), detail::g_window.load());
       return Installed();
     }
-    detail::SetPresenterCvar("present_letterbox", "false");
-    detail::SetPresenterCvar("present_safe_area_x", "100");
-    detail::SetPresenterCvar("present_safe_area_y", "100");
+    SyncPresenterMode();
     Reapply();
     return true;
   }

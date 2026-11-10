@@ -1,34 +1,62 @@
-# Linux/Vulkan debugging session (planned)
+# Linux/Vulkan debugging session (in progress)
 
-Agenda collected on 2026-11-10 after the first Linux/Vulkan smoke test
-(Debug + Release builds boot the game to the title screen under Wayland +
-RADV on an ultrawide display). Nothing here is worked on yet; this is the
-list for the dedicated debugging/performance session.
+Started 2026-11-10 after the first Linux/Vulkan smoke test; refined by the
+maintainer's own testing (performance is already clearly better than the
+Windows build through Proton).
 
-## 1. Presentation: game must render 16:9 only ("side art" bug)
+## 1. Presentation: 16:9 output in fullscreen (DONE)
 
-Observed: on the ultrawide host display the title screen shows decorative
-side panels (winter scene left, forest right) filling the space around the
-16:9 game image. Expected: the game renders 16:9 only; the image is normally
-panning through the center - no side art.
+Bug: on non-16:9 fullscreen (and borderless) the game filled the whole
+ultrawide and showed content the 16:9 framing keeps off-screen (the title
+screen's side art). Windowed at 16:9 was already correct.
 
-Notes from the first run (`logs/fable_2_001.log`):
-- The `[ui-layout] [fitwin]` dump runs a full main-menu layout pass, so the
-  guest UI is being re-laid-out for the non-16:9 output - suspect this and/or
-  the present path (`present_letterbox` cvar, "Enable letterboxing for
-  non-native aspect ratios") before blaming the Vulkan backend itself.
-- Reproduce windowed at a 16:9 size first (e.g. 1280x720) to establish the
-  correct baseline, then fullscreen on the ultrawide.
-- Compare against the Windows/D3D12 build (known-good behavior on this same
-  machine via Wine) at the same output resolution.
+Root cause: `src/core/fable2_fit_window.h` writes the *window* aspect into
+the guest `.rdata` aspect floats (0x8209FE7C / 0x8209FDF4), which widens the
+GUI camera canvas (see docs/FIT_WINDOW.md "title screen" note), and forces
+`present_letterbox=false` so the presenter stretches the frame wall-to-wall.
 
-## 2. Performance improvements
+Fix (implemented): fullscreen/borderless output is pinned to 16:9 with
+letterbox bars — `fitwindow::PinOutput16x9()` in `src/core/fable2_fit_window.h`,
+applied by `ApplySize`/`SyncPresenterMode` and kept in sync across fullscreen
+toggles by `ui::TickVideo` (which also keeps video letterboxing). Windowed
+windows keep the fit-window behavior. Overrides:
+- `experimental_ultrawide_fit = true` (cvar / `fable_2.toml` key) restores the
+  wide framing in fullscreen (experimental).
+- `f2 ws aspect <n>` (console, deliberate) always wins over the pin.
 
-To profile once the presentation is correct. Relevant existing tooling:
-- `fable2_func_trace` + `tools/run_profiler.cmd` (function trace flow),
-  F3 FPS counter in-game, `fps_probe`, `fable2_stall_dump`.
-- Release build already uses `-O3`; the SDK runtime is built Release + `-g`.
-- Known D3D12-only CPU shortcuts that have no Vulkan counterpart yet
-  (candidates to port): `fable2_terrain_tess` / `fable2_skinning` CPU paths
-  and `skip_depth_clear_transfers` (see `docs/main_menu_crash_fix.md`,
-  `thirdparty/rexglue-sdk/src/graphics/d3d12/`).
+To verify: windowed 16:9 unchanged; borderless+exclusive fullscreen on the
+ultrawide show a centered 16:9 image with bars; `experimental_ultrawide_fit`
+brings the old look back.
+
+## 2. In-game performance measurement (DONE)
+
+"Measure actual ingame performance" - frame times, not just the F3 FPS
+(which is a 500 ms mean of guest XE_SWAP intervals). New
+`src/diagnostics/fable2_perf_recorder.h`, sampled from the per-guest-frame
+main-loop hook:
+
+- Stats: average FPS, median / 99th-percentile (1% low) / 99.9th-percentile
+  (0.1% low) frame times, max, frame count.
+- Hitch capture: frames over `perf_hitch_ms` (cvar, default 50 ms) are logged
+  (rate-limited) and counted.
+- Console `perf report|reset|dump [path]|overlay on|off` (works while paused);
+  `perf dump` writes per-frame CSV (`frame,timestamp_us,dt_us,hitch`).
+- Optional on-screen overlay (`perf_overlay` cvar).
+- Debug builds: `perf` command on the remote-control TCP channel.
+
+## 3. Stutters (OPEN)
+
+"Small stutters from time to time" - use the tooling from #2 to quantify and
+locate them. Suspects to check once we have CSV numbers:
+- Vulkan pipeline/state creation at runtime (the pre-baked SPIR-V set is
+  smaller than the D3D12 one; tessellation/FXAA GLSL is compiled at runtime
+  via glslang - docs/main_menu_crash_fix.md notes the slower path).
+- Texture streaming / guest-to-host uploads (see the hero/dog texture readback
+  work in plans/hero-dog-texture-readback.md).
+- Guest vblank pacing / present gating (docs/FPS_CAP_INVESTIGATION.md).
+
+## 4. Performance improvements (OPEN)
+
+After #3 identifies the real costs. Candidate already known: port the
+D3D12-only CPU shortcuts (`fable2_terrain_tess` / `fable2_skinning`,
+`skip_depth_clear_transfers`) to the Vulkan backend.

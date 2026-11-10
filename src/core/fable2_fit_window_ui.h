@@ -951,24 +951,44 @@ inline void NoteBink(int entry) {
 }
 }  // namespace fable2::fitwindow::ui::detail
 
+namespace fable2::fitwindow {
+// Defined in fable2_fit_window.h (included after this header).
+inline bool PinOutput16x9();
+inline void Reapply();
+inline void SyncPresenterMode();
+}  // namespace fable2::fitwindow
+
 namespace fable2::fitwindow::ui {
 // Call once a frame (the console poll does). Switches letterboxing on while a
-// video plays and back off after, if the fit is on.
+// video plays and back off after, if the fit is on; and keeps the fullscreen
+// 16:9 pin (fable2_fit_window.h PinOutput16x9) applied across fullscreen
+// toggles, which can happen without a pixel-size change and thus no resize
+// event.
 inline void TickVideo() {
   static bool playing = false;
+  static bool pinned = false;
   const int64_t last = detail::g_bink_last_ms.load(std::memory_order_relaxed);
   // A menu's own preview video (Abilities) is not a full-screen video.
   const bool menu_up = detail::NowMs() - g_menu_ms.load(std::memory_order_relaxed) < 600;
   const bool now_playing = last != 0 && detail::NowMs() - last < 300 && !menu_up;
+  const bool now_pinned = PinOutput16x9();
+  if (now_pinned != pinned) {
+    // The output aspect changed with the window mode: rewrite the guest
+    // aspect floats and re-sync the presenter.
+    pinned = now_pinned;
+    Reapply();
+    SyncPresenterMode();
+  }
   if (now_playing == playing) return;
   playing = now_playing;
   if (rex::cvar::GetFlagByName("fit_game_to_window") != "true") return;
-  rex::cvar::SetFlagByName("present_letterbox", playing ? "true" : "false");
+  rex::cvar::SetFlagByName("present_letterbox",
+                           (playing || pinned) ? "true" : "false");
   std::string counts;
   for (int i = 0; i < detail::kBinkEntries; ++i)
     counts += " " + std::to_string(detail::g_bink_calls[i].load(std::memory_order_relaxed));
   REXSYS_INFO("[fit-window] video {}: letterbox {} (Bink entry calls:{})",
-              playing ? "started" : "ended", playing ? "on" : "off", counts);
+              playing ? "started" : "ended", (playing || pinned) ? "on" : "off", counts);
 }
 }  // namespace fable2::fitwindow::ui
 

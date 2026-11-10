@@ -5,6 +5,14 @@
 `src/core/fable2_fit_window_ui.h` moves the HUD and menus to match. Turn it
 off with `fit_game_to_window = false` in `fable_2.toml`.
 
+**Fullscreen and borderless output are pinned to 16:9** (letterboxed): the
+game is only intended to be rendered 16:9, and the widened framing shows
+content the 16:9 view keeps off-screen (like the title screen's side art).
+Windowed windows always follow their shape. Set
+`experimental_ultrawide_fit = true` in `fable_2.toml` to also widen
+fullscreen output (experimental), or force any shape from the console with
+`f2 ws aspect` (which always wins).
+
 Everything follows the aspect live: resizing the window, `f2 ws aspect` or
 `f2 ws on|off` in the developer console updates open screens without a
 restart. At 16:9 every element is back at its authored place. See
@@ -50,7 +58,9 @@ in the middle.
 
 On a window wider than 16:9, the title screen's black/grey box ("Press A to
 start", legal text) stays 16:9 and the main menu's scrolling panorama shows at
-its sides until the box fades out after the legal text.
+its sides until the box fades out after the legal text. Windowed only (or
+fullscreen with `experimental_ultrawide_fit`): fullscreen output is pinned to
+16:9 by default, where the box covers the whole image.
 
 What was tried (fit window builds 21-28, console tests):
 
