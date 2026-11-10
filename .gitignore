@@ -40,6 +40,7 @@ fable_2_manifest.toml.bak
 /*.py
 /*.sh
 /*.png
+!/build.sh
 build_*.log
 rebuild.log
 rebuild2.log

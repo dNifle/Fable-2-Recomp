@@ -47,7 +47,7 @@ if(FABLE2_CODEGEN_TOOL)
     # old/manual CMake cache.
     get_filename_component(FABLE2_PACKAGE_ROOT "${rexglue_DIR}/../../.." ABSOLUTE)
     set(FABLE2_SDK_PROVENANCE "${FABLE2_PACKAGE_ROOT}/renderer-sdk-provenance.json")
-    if(WIN32 AND EXISTS "${FABLE2_SDK_PROVENANCE}")
+    if(EXISTS "${FABLE2_SDK_PROVENANCE}")
         file(READ "${FABLE2_SDK_PROVENANCE}" FABLE2_SDK_METADATA)
         string(JSON FABLE2_STAGED_CONFIGURATION ERROR_VARIABLE FABLE2_METADATA_ERROR
                GET "${FABLE2_SDK_METADATA}" configuration)
@@ -58,7 +58,7 @@ if(FABLE2_CODEGEN_TOOL)
                 set(FABLE2_REQUIRED_CONFIGURATION "Release")
             endif()
             if(NOT FABLE2_STAGED_CONFIGURATION STREQUAL FABLE2_REQUIRED_CONFIGURATION)
-                message(FATAL_ERROR "Staged SDK is ${FABLE2_STAGED_CONFIGURATION}, but this host needs ${FABLE2_REQUIRED_CONFIGURATION}. Rerun build.cmd to select the matched SDK.")
+                message(FATAL_ERROR "Staged SDK is ${FABLE2_STAGED_CONFIGURATION}, but this host needs ${FABLE2_REQUIRED_CONFIGURATION}. Rerun build.cmd (Windows) or build.sh (Linux) to select the matched SDK.")
             endif()
         endif()
     endif()
@@ -110,6 +110,18 @@ add_custom_command(TARGET fable_2 POST_BUILD
         "$<TARGET_FILE_DIR:fable_2>/fable2_build.json"
     COMMENT "Staging supported game profiles for the launcher"
     VERBATIM)
+
+# On Linux the SDK helper stages the GPU plugin but not the shared runtime
+# (its runtime-DLL staging is Windows/macOS only), while the $ORIGIN RPATH
+# expects librexruntime.so next to the executable.
+if(UNIX AND NOT APPLE)
+    add_custom_command(TARGET fable_2 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:rex::runtime>"
+            "$<TARGET_FILE_DIR:fable_2>"
+        COMMENT "Staging librexruntime.so next to fable_2"
+        VERBATIM)
+endif()
 
 # The app's probe/diagnostic headers (src/diagnostics/*.h) use the standard CRT
 # functions (fopen, getenv, strcat, strncat, ...), which the MSVC/UCRT headers
@@ -185,18 +197,24 @@ endif()
 
 # Stage a copy of the README + the function-tracing launcher next to the exe
 # so anyone who gets the build folder (without the repo) knows how to run
-# the game and how to capture guest function-call logs.
+# the game and how to capture guest function-call logs. The launch helpers
+# are Windows .cmd scripts; skip them on other platforms.
+set(FABLE2_STAGE_WINDOWS_SCRIPTS "")
+if(WIN32)
+  set(FABLE2_STAGE_WINDOWS_SCRIPTS
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/fable2-functrace.cmd
+            $<TARGET_FILE_DIR:fable_2>/fable2-functrace.cmd
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_profiler.cmd
+            $<TARGET_FILE_DIR:fable_2>/run_profiler.cmd)
+endif()
 add_custom_command(TARGET fable_2 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/README.md
           $<TARGET_FILE_DIR:fable_2>/README.md
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          ${CMAKE_CURRENT_SOURCE_DIR}/tools/fable2-functrace.cmd
-          $<TARGET_FILE_DIR:fable_2>/fable2-functrace.cmd
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_profiler.cmd
-          $<TARGET_FILE_DIR:fable_2>/run_profiler.cmd
-  COMMENT "Staging README.md + fable2-functrace.cmd + run_profiler.cmd next to fable_2.exe"
+  ${FABLE2_STAGE_WINDOWS_SCRIPTS}
+  COMMENT "Staging README.md next to fable_2"
 )
 
 # --- F5 external-Lua runner (src/lua/) -----------------------------------
@@ -338,10 +356,13 @@ endif()
 add_custom_command(TARGET fable_2 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/app-icon.png"
-            "$<TARGET_FILE_DIR:fable_2>/app-icon.png"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/tools/StartWithoutAudio.cmd"
-            "$<TARGET_FILE_DIR:fable_2>/StartWithoutAudio.cmd")
+            "$<TARGET_FILE_DIR:fable_2>/app-icon.png")
+if(WIN32)
+    add_custom_command(TARGET fable_2 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/StartWithoutAudio.cmd"
+                "$<TARGET_FILE_DIR:fable_2>/StartWithoutAudio.cmd")
+endif()
 
 # --- Vulkan renderer: Stage 2 (source-built plugin, swappable at launch) --
 # The prebuilt plugin above (GPU_PLUGINS xenos) is D3D12-only. The Vulkan
@@ -359,7 +380,14 @@ add_custom_command(TARGET fable_2 POST_BUILD
 #   -DREXGLUE_SDK_SOURCE=<SDK source tree>    (optional; Vulkan plugin only)
 # build.cmd sets both, staging the SDK with tools/build_runtime_sdk.cmd.
 if(NOT DEFINED REXGLUE_SDK_ROOT)
-    set(REXGLUE_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/rexglue-sdk/win-amd64")
+    if(WIN32)
+        set(FABLE2_DEFAULT_SDK_PLATFORM "win-amd64")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64|arm64")
+        set(FABLE2_DEFAULT_SDK_PLATFORM "linux-arm64")
+    else()
+        set(FABLE2_DEFAULT_SDK_PLATFORM "linux-amd64")
+    endif()
+    set(REXGLUE_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/rexglue-sdk/${FABLE2_DEFAULT_SDK_PLATFORM}")
 endif()
 if(NOT DEFINED REXGLUE_SDK_SOURCE)
     set(REXGLUE_SDK_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/rexglue-sdk")

@@ -24,8 +24,8 @@
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "clang-20",
-                "CMAKE_CXX_COMPILER": "clang++-20"
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++"
             },
             "condition": {
                 "type": "equals",
@@ -133,6 +133,16 @@
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
         },
         {
+            "name": "linux-amd64-release-profiling",
+            "displayName": "Linux AMD64 Release (profiling: -O3 + symbols, frame pointers)",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+                "FABLE2_PROFILER_FRIENDLY": "ON"
+            }
+        },
+        {
             "name": "win-amd64-relwithdebinfo",
             "displayName": "Windows AMD64 RelWithDebInfo",
             "inherits": "windows-base",
@@ -225,6 +235,7 @@
         { "name": "win-amd64-relwithdebinfo", "configurePreset": "win-amd64-relwithdebinfo" },
         { "name": "linux-amd64-debug", "configurePreset": "linux-amd64-debug" },
         { "name": "linux-amd64-release", "configurePreset": "linux-amd64-release" },
+        { "name": "linux-amd64-release-profiling", "configurePreset": "linux-amd64-release-profiling" },
         { "name": "linux-amd64-relwithdebinfo", "configurePreset": "linux-amd64-relwithdebinfo" },
         { "name": "win-arm64-debug", "configurePreset": "win-arm64-debug" },
         { "name": "win-arm64-release", "configurePreset": "win-arm64-release" },
