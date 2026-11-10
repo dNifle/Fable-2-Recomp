@@ -65,6 +65,10 @@ inline constexpr size_t kCapacity = 16384;   // ring: ~4.5 min at 60 fps
 inline constexpr size_t kRecentHitches = 8;  // kept for report/overlay/remote
 inline constexpr int64_t kGapUs = 1000000;   // >= 1 s: pause/break, not a frame time
 inline constexpr uint64_t kPublishEvery = 8;  // frames between snapshot publishes
+// The fps/percentile numbers cover a sliding window of the most recent 2 s of
+// frame time (so the display follows "now" and can be used to evaluate the
+// framerate while playing); session totals are reported separately.
+inline constexpr int64_t kRecentWindowUs = 2000000;
 
 // Ring entry flags, decided when the frame is recorded.
 inline constexpr uint8_t kHitchFlag = 1;
@@ -86,9 +90,11 @@ struct Hitch {
 };
 
 // What the readers see: a copy published under mu(), never the ring itself.
+// The rate/percentile numbers cover the sliding recent window (last ~2 s of
+// frame time); frames/hitches/gaps are session totals since reset.
 struct Snapshot {
   uint64_t frames = 0;   // frames recorded since reset
-  uint64_t window = 0;   // ring entries the stats below cover (gaps excluded)
+  uint64_t window = 0;   // frames in the recent window the stats below cover
   uint64_t hitches = 0;  // dt >= perf_hitch_ms (gaps included)
   uint64_t gaps = 0;     // of those, >= kGapUs and excluded from the stats
   int64_t t0_us = 0;     // first recorded boundary (hitch times are relative to it)
@@ -98,6 +104,8 @@ struct Snapshot {
   double p99_ms = 0.0;   // 99th percentile of the window = 1% low frame time
   double p999_ms = 0.0;  // 99.9th percentile of the window = 0.1% low frame time
   double max_ms = 0.0;
+  double session_avg_fps = 0.0;  // over every recorded frame
+  double session_max_ms = 0.0;
   std::vector<Hitch> recent;  // newest last
 };
 
@@ -160,13 +168,26 @@ inline const Entry& ring_at(const Writer& w, size_t i) {
 // the frame right after each publish (the recorder must not measure itself).
 inline void publish_stats() {
   const Writer& w = W();
-  std::vector<int64_t> dts;
-  dts.reserve(w.count);
-  int64_t sum = 0, max_us = 0;
+  // Session totals over the whole ring.
+  int64_t session_sum = 0, session_max_us = 0;
+  size_t session_n = 0;
   for (size_t i = 0; i < w.count; ++i) {
     const Entry& e = ring_at(w, i);
     if (e.flags & kGapFlag) continue;  // pause/break deltas are not frame times
+    session_sum += e.dt_us;
+    if (e.dt_us > session_max_us) session_max_us = e.dt_us;
+    ++session_n;
+  }
+  // The recent window: the newest frames adding up to kRecentWindowUs of
+  // frame time (a sliding window, so the display follows "now").
+  std::vector<int64_t> dts;
+  dts.reserve(256);
+  int64_t sum = 0, max_us = 0, span_us = 0;
+  for (size_t i = w.count; i > 0 && span_us < kRecentWindowUs; --i) {
+    const Entry& e = ring_at(w, i - 1);
+    if (e.flags & kGapFlag) continue;  // pause/break deltas are not frame times
     dts.push_back(e.dt_us);
+    span_us += e.dt_us;
     sum += e.dt_us;
     if (e.dt_us > max_us) max_us = e.dt_us;
   }
@@ -188,6 +209,11 @@ inline void publish_stats() {
   s.hitches = w.hitches;
   s.gaps = w.gaps;
   s.t0_us = w.t0_us;
+  if (session_n > 0) {
+    s.session_avg_fps =
+        session_sum > 0 ? 1000.0 / ((static_cast<double>(session_sum) / session_n) / 1000.0) : 0.0;
+    s.session_max_ms = static_cast<double>(session_max_us) / 1000.0;
+  }
   if (!dts.empty()) {
     s.avg_ms = (static_cast<double>(sum) / static_cast<double>(dts.size())) / 1000.0;
     s.avg_fps = s.avg_ms > 0.0 ? 1000.0 / s.avg_ms : 0.0;
@@ -271,13 +297,14 @@ inline std::string report() {
   if (last.empty()) last = "none";
   char buf[768];
   std::snprintf(buf, sizeof(buf),
-                "frames %llu, stats over the last %llu (gaps %llu excluded)\n"
-                "avg %.2f fps / %.2f ms, median %.2f ms, max %.2f ms\n"
+                "frames %llu (session avg %.2f fps, max %.2f ms, gaps %llu excluded)\n"
+                "last 2 s (%llu frames): avg %.2f fps / %.2f ms, median %.2f ms, max %.2f ms\n"
                 "1%% low %.2f fps (%.2f ms), 0.1%% low %.2f fps (%.2f ms)\n"
                 "hitches %llu (>= %d ms), last: %s",
-                static_cast<unsigned long long>(s.frames),
-                static_cast<unsigned long long>(s.window),
-                static_cast<unsigned long long>(s.gaps), s.avg_fps, s.avg_ms, s.median_ms,
+                static_cast<unsigned long long>(s.frames), s.session_avg_fps,
+                s.session_max_ms,
+                static_cast<unsigned long long>(s.gaps),
+                static_cast<unsigned long long>(s.window), s.avg_fps, s.avg_ms, s.median_ms,
                 s.max_ms, low1, s.p99_ms, low01, s.p999_ms,
                 static_cast<unsigned long long>(s.hitches),
                 static_cast<int>(REXCVAR_GET(perf_hitch_ms)), last.c_str());
@@ -333,13 +360,13 @@ class PerfOverlayDialog : public rex::ui::ImGuiDialog {
     const double low01 = s.p999_ms > 0.0 ? 1000.0 / s.p999_ms : 0.0;
     char buf[320];
     std::snprintf(buf, sizeof(buf),
-                  "perf  %.1f fps   1%% low %.1f  0.1%% low %.1f\n"
+                  "perf  %.1f fps (last 2 s)   1%% low %.1f  0.1%% low %.1f\n"
                   "frame %.2f ms avg  %.2f med  %.2f max\n"
-                  "hitches %llu (>= %d ms)  window %llu",
+                  "session avg %.1f fps over %llu frames  hitches %llu (>= %d ms)",
                   s.avg_fps, low1, low01, s.avg_ms, s.median_ms, s.max_ms,
+                  s.session_avg_fps, static_cast<unsigned long long>(s.frames),
                   static_cast<unsigned long long>(s.hitches),
-                  static_cast<int>(REXCVAR_GET(perf_hitch_ms)),
-                  static_cast<unsigned long long>(s.window));
+                  static_cast<int>(REXCVAR_GET(perf_hitch_ms)));
     const ImVec2 pos(8.0f, 8.0f);
     const ImVec2 size = ImGui::CalcTextSize(buf);
     dl->AddRectFilled(ImVec2(pos.x - 4.0f, pos.y - 4.0f),
