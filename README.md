@@ -11,7 +11,7 @@ Recompilation of Fable 2 (Xbox 360, title ID 4D5307F1) using the [ReXGlue SDK](h
 You need your own Fable 2 GOTY disc image (`.iso`) and about 7 GB of free space.
 
 1. Download the `windows` zip from the [latest release](https://github.com/himdo/Fable-2-Recomp/releases/latest) and unzip it anywhere.
-2. Open `Fable2Launcher.exe`.
+2. Open `Fable2Launcher.exe` (on Linux: `Fable2Launcher`).
 3. Click **Extract from ISO** and pick your `.iso`. The game files go into the launcher's folder.
 4. Click **Play Fable II**.
 
@@ -52,9 +52,10 @@ Original GOTY USA/Europe and German GOTY dumps are supported by the default
 [x] Custom Launcher
   - [x] Built in ISO extractor
 
-## Windows launcher
+## Launcher (Windows and Linux)
 
-The optional WPF launcher detects the original game edition and configures
+The optional Avalonia launcher (same cross-platform UI on Windows and Linux)
+detects the original game edition and configures
 output resolution, internal render scale, anisotropic filtering, FXAA, VSync,
 window/fullscreen mode, and separate 30/60/120/144/165/240/unlimited FPS limits for the game
 and for presenting to the display. It keeps its preferences
@@ -68,6 +69,11 @@ folder, with a live progress screen and a Stop button. It reads Xbox 360 GDFX
 discs with the shared [X360Extract](tools/x360extract/) library, so its output
 matches the `x360extract` tool byte for byte — making the launcher the simplest
 way to get the game files in place, with no separate extractor tool.
+
+Build it with `build.cmd launcher` on Windows or `launcher/build-launcher.sh`
+on Linux (`linux`/`win`/`all` targets; cross-publishes the Windows build too).
+See [launcher/README.md](launcher/README.md) for the Linux build/run steps and
+the full launcher documentation.
 
 Packaged releases check GitHub for a newer release when the launcher opens and
 show a button that opens its page. Local builds don't check, and a failed check
