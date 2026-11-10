@@ -1,13 +1,15 @@
-using Microsoft.Win32;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Threading;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 
 namespace Fable2Launcher;
 
@@ -46,7 +48,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        PreviewKeyDown += MainWindow_PreviewKeyDown;
+        // Tunnel handler: WPF's PreviewKeyDown equivalent, so the key-capture
+        // field sees every key press before focused controls handle it.
+        AddHandler(KeyDownEvent, MainWindow_PreviewKeyDown, RoutingStrategies.Tunnel);
         SetDefaults();
         DetectGameDirectory();
         _loading = false;
@@ -62,8 +66,8 @@ public partial class MainWindow : Window
         if (update is null) return;
         _updatePage = update.PageUrl;
         UpdateButton.Content = $"Update available: {update.Version}";
-        UpdateButton.ToolTip = "Open the release page";
-        UpdateButton.Visibility = Visibility.Visible;
+        ToolTip.SetTip(UpdateButton, "Open the release page");
+        UpdateButton.IsVisible = true;
     }
 
     private void UpdateClicked(object sender, RoutedEventArgs e)
@@ -96,8 +100,8 @@ public partial class MainWindow : Window
         string? configuredPath = LauncherState.LoadGameDirectory();
         if (!string.IsNullOrWhiteSpace(configuredPath) &&
             File.Exists(Path.Combine(configuredPath, "default.xex")) &&
-            (File.Exists(Path.Combine(launcherDirectory, "fable_2.exe")) ||
-             File.Exists(Path.Combine(configuredPath, "fable_2.exe"))))
+            (GameLaunchPlanner.FindGameExecutable(launcherDirectory) is not null ||
+             GameLaunchPlanner.FindGameExecutable(configuredPath) is not null))
         {
             SetGameDirectory(configuredPath);
             return;
@@ -112,7 +116,7 @@ public partial class MainWindow : Window
     private void SetGameDirectory(string directory)
     {
         _gameDirectory = Path.GetFullPath(directory);
-        _executableDirectory = File.Exists(Path.Combine(AppContext.BaseDirectory, "fable_2.exe"))
+        _executableDirectory = GameLaunchPlanner.FindGameExecutable(AppContext.BaseDirectory) is not null
             ? AppContext.BaseDirectory : _gameDirectory;
         GamePathText.Text = _gameDirectory;
         LauncherState.SaveGameDirectory(_gameDirectory);
@@ -182,7 +186,7 @@ public partial class MainWindow : Window
 
     private static void SelectByTag(ComboBox combo, string tag)
     {
-        foreach (object item in combo.Items)
+        foreach (object? item in combo.Items)
         {
             if (item is ComboBoxItem comboItem &&
                 string.Equals(comboItem.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase))
@@ -206,9 +210,10 @@ public partial class MainWindow : Window
 
     private bool SaveConfiguration()
     {
-        if (_gameDirectory is null || _executableDirectory is null || !File.Exists(Path.Combine(_executableDirectory, "fable_2.exe")))
+        if (_gameDirectory is null || _executableDirectory is null ||
+            GameLaunchPlanner.FindGameExecutable(_executableDirectory) is null)
         {
-            MessageBox.Show(this, "Choose the folder containing fable_2.exe first.",
+            MessageBox.Show(this, "Choose the folder containing the game executable first.",
                 "Game not found", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
@@ -359,23 +364,26 @@ public partial class MainWindow : Window
         RefreshSummary(markDirty: true);
     }
 
-    private void BrowseClicked(object sender, RoutedEventArgs e)
+    private async void BrowseClicked(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog
-        {
-            Title = "Choose original gamefiles (default.xex and data)",
-            Multiselect = false
-        };
-        if (dialog.ShowDialog(this) == true)
-        {
-            if (!File.Exists(Path.Combine(dialog.FolderName, "default.xex")))
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel is null) return;
+        IReadOnlyList<IStorageFolder> folders = await topLevel.StorageProvider.OpenFolderPickerAsync(
+            new FolderPickerOpenOptions
             {
-                MessageBox.Show(this, "This folder does not contain default.xex.",
-                    "Game not found", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            SetGameDirectory(dialog.FolderName);
+                Title = "Choose original gamefiles (default.xex and data)",
+                AllowMultiple = false
+            });
+        if (folders.Count == 0) return;
+        string? folderName = folders[0].TryGetLocalPath();
+        if (folderName is null) return;
+        if (!File.Exists(Path.Combine(folderName, "default.xex")))
+        {
+            MessageBox.Show(this, "This folder does not contain default.xex.",
+                "Game not found", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
         }
+        SetGameDirectory(folderName);
     }
 
     private bool _extracting;
@@ -389,18 +397,22 @@ public partial class MainWindow : Window
     private static readonly SolidColorBrush DoneBrush = new(Color.FromRgb(0x7F, 0xE0, 0xA6));
     private static readonly SolidColorBrush ItemBrush = new(Color.FromRgb(0xD0, 0xD8, 0xD2));
 
-    private void ExtractClicked(object sender, RoutedEventArgs e)
+    private async void ExtractClicked(object sender, RoutedEventArgs e)
     {
         if (_extracting) return;
 
-        var isoDialog = new OpenFileDialog
-        {
-            Title = "Choose an ISO",
-            Filter = "ISO (*.iso)|*.iso",
-            CheckFileExists = true
-        };
-        if (isoDialog.ShowDialog(this) != true) return;
-        string isoPath = isoDialog.FileName;
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel is null) return;
+        IReadOnlyList<IStorageFile> isoFiles = await topLevel.StorageProvider.OpenFilePickerAsync(
+            new FilePickerOpenOptions
+            {
+                Title = "Choose an ISO",
+                AllowMultiple = false,
+                FileTypeFilter = new[] { new FilePickerFileType("ISO (*.iso)") { Patterns = new[] { "*.iso" } } }
+            });
+        if (isoFiles.Count == 0) return;
+        string? isoPath = isoFiles[0].TryGetLocalPath();
+        if (isoPath is null) return;
 
         // No destination prompt: extract straight into the folder the launcher is
         // running from, so the game data lands beside fable_2.exe and becomes
@@ -416,7 +428,7 @@ public partial class MainWindow : Window
         // Show the overlay immediately (indeterminate) so there is no perceptible
         // delay; the folder checklist and byte total fill in once the disc layout
         // has been read on the worker thread.
-        ExtractionOverlay.Visibility = Visibility.Visible;
+        ExtractionOverlay.IsVisible = true;
         ExtractionProgressBar.IsIndeterminate = true;
         ExtractionPercentText.Text = "…";
         ExtractionBytesText.Text = "Scanning…";
@@ -424,9 +436,9 @@ public partial class MainWindow : Window
         ExtractionFileText.Text = "Scanning for the GDFX header…";
         ExtractionFolderList.Children.Clear();
         _rootChecks.Clear();
-        HashPrompt.Visibility = Visibility.Collapsed;
+        HashPrompt.IsVisible = false;
 
-        Task.Run(async () =>
+        _ = Task.Run(async () =>
         {
             string? error = null;
             int files = 0;
@@ -438,9 +450,9 @@ public partial class MainWindow : Window
                 List<RootItem> plan = disc.Plan.ToList();
 
                 var progress = new ExtractionProgress(plan, () => _stopRequested);
-                progress.Changed += p => Dispatcher.BeginInvoke(() => PushExtractionUi(p));
+                progress.Changed += p => Dispatcher.UIThread.Post(() => PushExtractionUi(p));
                 progress.RootCompleted += name =>
-                    Dispatcher.BeginInvoke(new Action(() => MarkRootDone(name)));
+                    Dispatcher.UIThread.Post(() => MarkRootDone(name));
 
                 // If Stop was pressed while the layout was being read, bail now.
                 if (_stopRequested)
@@ -449,7 +461,7 @@ public partial class MainWindow : Window
                 // The overlay is already on screen (indeterminate); now that the
                 // layout is known, build the checklist and switch to the byte-
                 // accurate determinate bar.
-                Dispatcher.Invoke(() =>
+                Dispatcher.UIThread.Invoke(() =>
                 {
                     BuildFolderChecklist(plan);
                     ResetExtractionUi(progress);
@@ -472,7 +484,7 @@ public partial class MainWindow : Window
                     var decision = new TaskCompletionSource<bool>(
                         TaskCreationOptions.RunContinuationsAsynchronously);
                     _hashDecision = decision;
-                    Dispatcher.Invoke(() => ShowHashPrompt(message));
+                    Dispatcher.UIThread.Invoke(() => ShowHashPrompt(message));
                     bool extractAnyways = await decision.Task;
                     if (ReferenceEquals(_hashDecision, decision))
                         _hashDecision = null;
@@ -510,7 +522,7 @@ public partial class MainWindow : Window
                 error = exception.Message;
             }
 
-            Dispatcher.Invoke(() =>
+            Dispatcher.UIThread.Invoke(() =>
             {
                 _extracting = false;
                 _stopRequested = false;
@@ -518,15 +530,15 @@ public partial class MainWindow : Window
                 LaunchButton.IsEnabled = true;
                 if (cancelled)
                 {
-                    ExtractionOverlay.Visibility = Visibility.Collapsed;
-                    ExtractionStatusText.Visibility = Visibility.Visible;
+                    ExtractionOverlay.IsVisible = false;
+                    ExtractionStatusText.IsVisible = true;
                     ExtractionStatusText.Text = "Extraction stopped.";
                     return;
                 }
                 if (error is not null)
                 {
-                    ExtractionOverlay.Visibility = Visibility.Collapsed;
-                    ExtractionStatusText.Visibility = Visibility.Visible;
+                    ExtractionOverlay.IsVisible = false;
+                    ExtractionStatusText.IsVisible = true;
                     ExtractionStatusText.Text = "Extraction failed.";
                     MessageBox.Show(this, error, "Could not extract ISO",
                         MessageBoxButton.OK, MessageBoxImage.Error);
@@ -535,7 +547,7 @@ public partial class MainWindow : Window
                 ExtractionProgressBar.Value = 100;
                 ExtractionPercentText.Text = "100%";
                 ExtractionPhaseText.Text = "Done";
-                ExtractionStatusText.Visibility = Visibility.Visible;
+                ExtractionStatusText.IsVisible = true;
                 ExtractionStatusText.Text =
                     $"Extracted {files:N0} files ({DiscExtraction.FormatSize(bytes)}) from {Path.GetFileName(isoPath)}.";
                 // SetGameDirectory reports readiness (including whether fable_2.exe
@@ -573,7 +585,7 @@ public partial class MainWindow : Window
         if (_hashDecision is null) return;
         _hashDecision.TrySetResult(false);
         StopButton.IsEnabled = false;
-        HashPrompt.Visibility = Visibility.Collapsed;
+        HashPrompt.IsVisible = false;
         ExtractionPhaseText.Text = "Stopping…";
     }
 
@@ -581,7 +593,7 @@ public partial class MainWindow : Window
     {
         if (_hashDecision is null) return;
         _hashDecision.TrySetResult(true);
-        HashPrompt.Visibility = Visibility.Collapsed;
+        HashPrompt.IsVisible = false;
         ExtractionPhaseText.Text = "Extracting…";
     }
 
@@ -592,7 +604,7 @@ public partial class MainWindow : Window
         HashPromptText.Text = message;
         ExtractionPhaseText.Text = "Unrecognized default.xex";
         StopButton.IsEnabled = true;   // the user can still abort
-        HashPrompt.Visibility = Visibility.Visible;
+        HashPrompt.IsVisible = true;
     }
 
     private void BuildFolderChecklist(List<RootItem> plan)
@@ -607,7 +619,7 @@ public partial class MainWindow : Window
                 IsChecked = false,
                 IsHitTestVisible = false,   // display-only progress checkbox
                 FontSize = 14,
-                FontWeight = item.IsDirectory ? FontWeights.SemiBold : FontWeights.Normal,
+                FontWeight = item.IsDirectory ? FontWeight.SemiBold : FontWeight.Normal,
                 Foreground = ItemBrush,
                 Margin = new Thickness(0, 3, 0, 3),
                 VerticalContentAlignment = VerticalAlignment.Center
@@ -661,7 +673,7 @@ public partial class MainWindow : Window
         {
             timer.Stop();
             if (!_extracting)   // a new extraction may have started in the meantime
-                ExtractionOverlay.Visibility = Visibility.Collapsed;
+                ExtractionOverlay.IsVisible = false;
         };
         timer.Start();
     }
@@ -676,11 +688,11 @@ public partial class MainWindow : Window
 
     private void SetPage(bool advanced)
     {
-        MainContent.Visibility = advanced ? Visibility.Collapsed : Visibility.Visible;
-        AdvancedContent.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
-        MainFooter.Visibility = advanced ? Visibility.Collapsed : Visibility.Visible;
-        AdvancedFooter.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
-        AdvancedOptionsButton.Visibility = advanced ? Visibility.Collapsed : Visibility.Visible;
+        MainContent.IsVisible = !advanced;
+        AdvancedContent.IsVisible = advanced;
+        MainFooter.IsVisible = !advanced;
+        AdvancedFooter.IsVisible = advanced;
+        AdvancedOptionsButton.IsVisible = !advanced;
     }
 
     private void AdvancedOptionsClicked(object sender, RoutedEventArgs e)
@@ -731,8 +743,7 @@ public partial class MainWindow : Window
             CornerRadius = new CornerRadius(4),
             MinHeight = 38,
             Padding = new Thickness(10, 4, 10, 4),
-            Cursor = Cursors.Hand,
-            SnapsToDevicePixels = true,
+            Cursor = new Cursor(StandardCursorType.Hand),
             Tag = capture,
         };
         capture.Border = keyField;
@@ -745,19 +756,18 @@ public partial class MainWindow : Window
             FontSize = 14,
         };
         keyField.Child = capture.Text;
-        // A single MouseDown handler captures every mouse button via
-        // e.ChangedButton (WPF doesn't expose per-button routed events for the
-        // middle and X buttons on a plain Border). The first LMB press enters
-        // listening mode; any press while listening sets that button as the key.
-        keyField.MouseDown += (s, e) =>
+        // A single PointerPressed handler captures every mouse button via
+        // PointerUpdateKind. The first LMB press enters listening mode; any
+        // press while listening sets that button as the key.
+        keyField.PointerPressed += (s, e) =>
         {
-            string? button = e.ChangedButton switch
+            string? button = e.GetCurrentPoint(keyField).Properties.PointerUpdateKind switch
             {
-                MouseButton.Left => "LMB",
-                MouseButton.Right => "RMB",
-                MouseButton.Middle => "MMB",
-                MouseButton.XButton1 => "XMB1",
-                MouseButton.XButton2 => "XMB2",
+                PointerUpdateKind.LeftButtonPressed => "LMB",
+                PointerUpdateKind.RightButtonPressed => "RMB",
+                PointerUpdateKind.MiddleButtonPressed => "MMB",
+                PointerUpdateKind.XButton1Pressed => "XMB1",
+                PointerUpdateKind.XButton2Pressed => "XMB2",
                 _ => null
             };
             if (button == null) return;
@@ -778,9 +788,10 @@ public partial class MainWindow : Window
         {
             Content = "✕",
             MinWidth = 30,
-            ToolTip = "Remove this binding",
-            Style = (Style)FindResource("SecondaryButton"),
         };
+        // Avalonia has no WPF Style property; style classes carry the look.
+        removeButton.Classes.Add("secondary");
+        ToolTip.SetTip(removeButton, "Remove this binding");
         removeButton.Click += (s, e) =>
         {
             KeybindList.Children.Remove(grid);
@@ -834,8 +845,9 @@ public partial class MainWindow : Window
         field.BorderBrush = KeyIdleBorder;
     }
 
-    // Map a WPF Key to the host-key name rex::ui::ParseVirtualKey expects (see
-    // Fable2ConfigFile.KeyNames). Returns null for keys that cannot be bound.
+    // Map an Avalonia Key to the host-key name rex::ui::ParseVirtualKey expects
+    // (see Fable2ConfigFile.KeyNames). Returns null for keys that cannot be
+    // bound. The name strings match the WPF launcher's exactly.
     private static string? KeyToName(Key key)
     {
         if (key >= Key.A && key <= Key.Z) return ((char)('A' + (key - Key.A))).ToString();
@@ -888,7 +900,7 @@ public partial class MainWindow : Window
         };
     }
 
-    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void MainWindow_PreviewKeyDown(object? sender, KeyEventArgs e)
     {
         if (_activeKeyField == null) return;
         if (e.Key == Key.Escape)
@@ -898,8 +910,7 @@ public partial class MainWindow : Window
             e.Handled = true;
             return;
         }
-        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
-        string? name = KeyToName(key);
+        string? name = KeyToName(e.Key);
         if (name != null)
         {
             SetKeyCaptureValue(_activeKeyField, name);
@@ -918,7 +929,7 @@ public partial class MainWindow : Window
 
     private static ComboBoxItem? FindTag(ComboBox combo, string tag)
     {
-        foreach (object item in combo.Items)
+        foreach (object? item in combo.Items)
             if (item is ComboBoxItem comboItem &&
                 string.Equals(comboItem.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase))
                 return comboItem;
@@ -968,7 +979,7 @@ public partial class MainWindow : Window
         var nameBlock = new TextBlock
         {
             Text = unstable ? name + "  (unstable)" : name,
-            FontWeight = FontWeights.SemiBold,
+            FontWeight = FontWeight.SemiBold,
         };
         if (unstable) nameBlock.Foreground = UnstableBrush;
         labelStack.Children.Add(nameBlock);
@@ -987,8 +998,12 @@ public partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(10, 0, 0, 0),
         };
-        if (onChecked != null) check.Checked += (s, e) => onChecked();
-        if (onUnchecked != null) check.Unchecked += (s, e) => onUnchecked();
+        if (onChecked != null || onUnchecked != null)
+            check.IsCheckedChanged += (s, e) =>
+            {
+                if (check.IsChecked == true) onChecked?.Invoke();
+                else onUnchecked?.Invoke();
+            };
 
         Grid.SetColumn(labelStack, 0);
         Grid.SetColumn(check, 1);
@@ -1065,7 +1080,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void MouseSensitivitySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void MouseSensitivitySliderChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
         if (MouseSensitivityBox is not null)
             MouseSensitivityBox.Text = ((int)e.NewValue).ToString(CultureInfo.InvariantCulture);
@@ -1086,7 +1101,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void HotFuncYieldSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void HotFuncYieldSliderChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
         if (HotFuncYieldBox is not null)
             HotFuncYieldBox.Text = ((int)e.NewValue).ToString(CultureInfo.InvariantCulture);

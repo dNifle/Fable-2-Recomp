@@ -1,7 +1,9 @@
-# Windows launcher
+# Launcher (Windows and Linux)
 
-A .NET 8 WPF settings launcher for verified GOTY USA/Europe and German GOTY
-dumps. It validates the original XEX and content markers, then checks the
+A .NET 8 [Avalonia](https://avaloniaui.net/) settings launcher for verified GOTY
+USA/Europe and German GOTY dumps. The same cross-platform UI runs on Windows
+(`Fable2Launcher.exe`) and Linux (`Fable2Launcher`). It validates the original
+XEX and content markers, then checks the
 native build descriptor. Unknown revisions and known mixed retail/TU1 content
 are rejected; original game files are never modified.
 
@@ -9,7 +11,8 @@ are rejected; original game files are never modified.
 
 "Extract from ISO" opens a file picker for a raw Xbox 360 disc image (`.iso`)
 and extracts straight into the folder the launcher is running from (next to
-`fable_2.exe`) — there is no destination picker. The ISO content is written in
+`fable_2.exe`, or `fable_2` on Linux) — there is no destination picker. The ISO
+content is written in
 two phases:
 
 1. **`default.xex` only** — extracted and SHA-256-hashed first.
@@ -37,8 +40,8 @@ matched source-built Release runtime described in
 of correct timing in every scene.
 
 The **Advanced Options** button in the top bar opens a second page for the
-recomp's own settings (stored in `fable2_config.toml` next to `fable_2.exe`,
-separate from the engine's `fable_2.toml`):
+recomp's own settings (stored in `fable2_config.toml` next to the game
+executable, separate from the engine's `fable_2.toml`):
 
 - **Keybinds** — the keyboard→gamepad map as a list of editable rows (host key
   → guest input, with add/remove). Mouse look and mouse sensitivity are also
@@ -58,11 +61,21 @@ Dropdowns use dark text on a light background, including the selected item.
 The launcher and game use a project-owned book/tree icon documented in
 [asset provenance](../assets/README.md).
 
-Build from the repository root:
+Build from the repository root on Windows:
 
 ```cmd
 build.cmd launcher                 self-contained (default; ships with .NET)
 build.cmd launcher-dev             framework-dependent (needs .NET installed)
+dotnet run --project tests/Fable2.Launcher.ConfigTests -c Release
+```
+
+or on Linux (also cross-publishes the Windows build):
+
+```sh
+launcher/build-launcher.sh linux    linux-x64 -> out/tests/launcher-build-linux/Fable2Launcher
+launcher/build-launcher.sh win      win-x64   -> out/tests/launcher-build/Fable2Launcher.exe
+launcher/build-launcher.sh all      both (default)
+launcher/build-launcher.sh linux dev   framework-dependent (needs .NET installed)
 dotnet run --project tests/Fable2.Launcher.ConfigTests -c Release
 ```
 
@@ -72,15 +85,19 @@ accepted, every unsupported/unknown hash is rejected before extraction).
 ## Shipping without a .NET install
 
 The default build is a **self-contained single-file publish**: the .NET 8
-Desktop Runtime is bundled inside `Fable2Launcher.exe` (~160 MB), so users
+runtime is bundled inside the launcher binary (~85 MB), so users
 need no .NET install and no separate runtime installer is shipped. The same
 applies to `x360extract.exe` (see `tools/x360extract`, default build is
-self-contained too). `build.cmd launcher-dev` produces the small
-framework-dependent exe for fast local iteration; it requires the .NET 8
-Desktop Runtime on the target machine.
+self-contained too). The `dev`/`launcher-dev` builds produce the small
+framework-dependent binary for fast local iteration; it requires the .NET 8
+runtime on the target machine.
 
-Output is `out/tests/launcher-build/Fable2Launcher.exe`. Put it beside
-`fable_2.exe`, its matched DLLs, `fable2_build.json` and `app-icon.png`.
+Output is `out/tests/launcher-build/Fable2Launcher.exe` (win-x64) and
+`out/tests/launcher-build-linux/Fable2Launcher` (linux-x64). Put it beside
+`fable_2.exe` (`fable_2` on Linux), its matched DLLs, `fable2_build.json` and
+`app-icon.png`. The Linux binary runs on X11 or Wayland and needs the usual
+desktop libraries (fontconfig etc.) that any GUI app needs; nothing is written
+outside the launcher's own folder and the selected game folder.
 
 The launcher defaults to its own folder on first launch and remembers the
 selected location in `launcher-game-path.txt` beside it. No developer path,
@@ -113,7 +130,8 @@ The game loads these textures at startup. Relaunch after changing bindings.
 To use the original controller prompts, clear the checkbox and launch again.
 Controller input remains available in both modes.
 
-The option requires a writable extracted game folder on NTFS. It creates a
+The option requires a writable extracted game folder on a filesystem with
+hard-link support (NTFS on Windows). It creates a
 read-only game-data view with two generated GUI banks and hard links to the
 other files. Your disc image and extracted banks are preserved. The launcher
 can reuse the view under `cache/keyboard-prompts` in the game-data folder.

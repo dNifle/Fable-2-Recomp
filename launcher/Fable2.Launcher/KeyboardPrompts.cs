@@ -3,9 +3,9 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
-using System.Windows;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
+using Avalonia;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
 
 namespace Fable2Launcher;
 
@@ -169,8 +169,9 @@ internal static class KeyboardPrompts
                 // so the healing cannot write through a hard link to the disc.
                 if (portable.Equals("data/dir.manifest", StringComparison.OrdinalIgnoreCase))
                     File.Copy(file.FullName, output);
-                else if (!CreateHardLink(output, file.FullName, IntPtr.Zero))
-                    throw new IOException("Keyboard prompts need a writable game folder on an NTFS volume. " +
+                else if (!CreateHardLink(output, file.FullName))
+                    throw new IOException("Keyboard prompts need a writable game folder on a filesystem " +
+                        "with hard-link support (NTFS on Windows). " +
                         "Turn off keyboard prompts to launch from the original folder.");
             }
             Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(staging, Textures))!);
@@ -204,21 +205,25 @@ internal static class KeyboardPrompts
 
     private static byte[] RenderKeycap(string label, int size)
     {
-        var drawing = new DrawingVisual();
-        using (DrawingContext dc = drawing.RenderOpen())
+        // Avalonia has no WPF-style DrawingVisual: draw straight into the
+        // render-target bitmap instead (same output pixels as the WPF port).
+        var bitmap = new RenderTargetBitmap(new PixelSize(size, size), new Vector(96, 96));
+        using (DrawingContext dc = bitmap.CreateDrawingContext())
+        using (dc.PushTransform(Matrix.CreateScale(size / 64.0, size / 64.0)))
         {
-            dc.PushTransform(new ScaleTransform(size / 64.0, size / 64.0));
             var fill = new SolidColorBrush(Color.FromRgb(20, 25, 35));
             var edge = new Pen(new SolidColorBrush(Color.FromRgb(220, 231, 242)), 2);
-            dc.DrawRoundedRectangle(fill, edge, new Rect(2, 8, 60, 48), 8, 8);
+            dc.DrawRectangle(fill, edge, new Rect(2, 8, 60, 48), 8, 8);
             string[] rows = label.Split('\n');
-            var type = new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+            // Font fallback list: Segoe UI on Windows, DejaVu Sans on Linux.
+            var type = new Typeface(new FontFamily("Segoe UI,DejaVu Sans"),
+                FontStyle.Normal, FontWeight.Bold, FontStretch.Normal);
             double em = rows.Length == 1 ? 32 : 20;
             FormattedText[] text;
             do
             {
                 text = rows.Select(row => new FormattedText(row, CultureInfo.InvariantCulture,
-                    FlowDirection.LeftToRight, type, em, Brushes.White, 1.0)).ToArray();
+                    FlowDirection.LeftToRight, type, em, Brushes.White)).ToArray();
                 em--;
             } while (em >= 6 && text.Any(row => row.Width > 53));
             double y = (64 - text.Sum(row => row.Height)) / 2;
@@ -229,10 +234,18 @@ internal static class KeyboardPrompts
             }
         }
 
-        var bitmap = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(drawing);
         byte[] pixels = new byte[size * size * 4];
-        bitmap.CopyPixels(pixels, size * 4, 0);
+        var handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+        try
+        {
+            // Premultiplied BGRA rows, same as the WPF Pbgra32 target.
+            bitmap.CopyPixels(new PixelRect(0, 0, size, size), handle.AddrOfPinnedObject(),
+                pixels.Length, size * 4);
+        }
+        finally
+        {
+            handle.Free();
+        }
         byte[] result = new byte[4 + pixels.Length];
         GuiTextureBank.WriteInt(result, 0, pixels.Length);
         for (int y = 0; y < size; y++)
@@ -249,7 +262,18 @@ internal static class KeyboardPrompts
         return result;
     }
 
+    // Hard links: kernel32's CreateHardLinkW on Windows, libc's link() elsewhere.
+    private static bool CreateHardLink(string newPath, string existingPath)
+    {
+        if (OperatingSystem.IsWindows())
+            return CreateHardLinkW(newPath, existingPath, IntPtr.Zero);
+        return UnixLink(existingPath, newPath) == 0;
+    }
+
     [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CreateHardLink(string newPath, string existingPath, IntPtr securityAttributes);
+    private static extern bool CreateHardLinkW(string newPath, string existingPath, IntPtr securityAttributes);
+
+    [DllImport("libc", EntryPoint = "link", SetLastError = true)]
+    private static extern int UnixLink(string existingPath, string newPath);
 }

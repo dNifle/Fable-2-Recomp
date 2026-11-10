@@ -1,8 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <UseWPF>true</UseWPF>
+    <!-- Cross-platform Avalonia UI (net8.0, not net8.0-windows): the same
+         project builds and runs on linux-x64 and win-x64. -->
+    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>Fable2Launcher</AssemblyName>
@@ -16,6 +17,17 @@
     <!-- Reusable Xbox 360 disc reader/extractor (GDFX + ISO 9660 + STFS), shared
          with tools/x360extract. Consumed as a project reference; produces X360ExtractCore.dll. -->
     <ProjectReference Include="..\..\tools\x360extract\lib\X360Extract.Core.csproj" />
-    <Resource Include="..\..\assets\app-icon.png" Link="Assets\app-icon.png" />
+    <AvaloniaResource Include="..\..\assets\app-icon.png" Link="Assets\app-icon.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Avalonia only auto-includes *.axaml; these keep the WPF-era .xaml names. -->
+    <AvaloniaXaml Include="App.xaml" />
+    <AvaloniaXaml Include="MainWindow.xaml" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.22" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.22" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.22" />
+    <PackageReference Include="Avalonia.Diagnostics" Version="11.3.22" Condition="'$(Configuration)' == 'Debug'" />
   </ItemGroup>
 </Project>
