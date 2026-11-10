@@ -27,6 +27,8 @@
 //                 captures the game's own frame even while other windows
 //                 cover it)
 //   cvar      -> get/set any cvar by name (existing SDK knob surface)
+//   perf      -> frame-time stats: avg fps, 1%/0.1% lows, hitches (read-only
+//                copy of the game thread's recorder snapshot)
 //   enable/disable -> toggle the remote pad (zero state when disabled)
 //
 // Input names match the keyboard_gamepad_map vocabulary (A/B/X/Y, LB/RB,
@@ -97,6 +99,7 @@ inline void CloseSock(sock_t s) {
 
 #include "remote_input_state.h"
 #include "fable2_frame_capture.h"
+#include "fable2_perf_recorder.h"  // "perf": frame-time statistics snapshot
 
 // Game-state accessors (defined in fable2_state_probe.h); forward-declared here
 // so the "game_state" command can read the classifier without pulling the whole
@@ -908,11 +911,12 @@ class ControlServer {
     if (cmd == "game_state") return HandleGameState(v);
     if (cmd == "screenshot") return HandleScreenshot(v);
     if (cmd == "cvar") return HandleCvar(v);
+    if (cmd == "perf") return HandlePerf(v);
 
     return Err(std::format(
         "unknown command '{}'; expected one of: ping, info, auth, press, "
         "release, stick, state, clear, script, get_state, game_state, "
-        "screenshot, cvar, enable, disable", cmd));
+        "screenshot, cvar, perf, enable, disable", cmd));
   }
 
   // "input" name -> slot; value defaults per slot (buttons 1, triggers 255,
@@ -1220,6 +1224,35 @@ class ControlServer {
     const std::string current = rex::cvar::GetFlagByName(*name);
     return std::format(R"({{"ok":true,"name":"{}","value":"{}"{}}})",
                        json_min::JEsc(*name), json_min::JEsc(current), IdEcho(v));
+  }
+
+  // Frame-time statistics: a read-only copy of the game thread's recorder
+  // snapshot (mutex-guarded, so safe from the connection thread; the raw ring
+  // stays on the game thread). Doubles go through %.3f - std::format's FP
+  // support depends on the standard library.
+  std::string HandlePerf(const json_min::Value& v) {
+    const fable2::perfrec::Snapshot s = fable2::perfrec::snapshot();
+    auto f3 = [](double x) {
+      char b[32];
+      std::snprintf(b, sizeof b, "%.3f", x);
+      return std::string(b);
+    };
+    std::string recent = "[";
+    for (size_t i = 0; i < s.recent.size(); ++i) {
+      const fable2::perfrec::Hitch& h = s.recent[i];
+      if (i) recent += ',';
+      recent += std::format(R"({{"frame":{},"dt_ms":{},"gap":{}}})", h.frame,
+                            f3(h.dt_us / 1000.0), h.gap ? "true" : "false");
+    }
+    recent += ']';
+    return std::format(
+        R"({{"ok":true,"frames":{},"window":{},"hitches":{},"gaps":{},)"
+        R"("avg_fps":{},"avg_ms":{},"median_ms":{},"p99_ms":{},"p999_ms":{},)"
+        R"("max_ms":{},"low_1pct_fps":{},"low_01pct_fps":{},"last_hitches":{}{}}})",
+        s.frames, s.window, s.hitches, s.gaps, f3(s.avg_fps), f3(s.avg_ms),
+        f3(s.median_ms), f3(s.p99_ms), f3(s.p999_ms), f3(s.max_ms),
+        f3(s.p99_ms > 0.0 ? 1000.0 / s.p99_ms : 0.0),
+        f3(s.p999_ms > 0.0 ? 1000.0 / s.p999_ms : 0.0), recent, IdEcho(v));
   }
 
   //--- State -----------------------------------------------------------------

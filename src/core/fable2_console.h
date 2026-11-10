@@ -19,7 +19,7 @@
 // the game log via cprint while host results go to out.txt.
 //
 // Host commands: wait, waitfor, exec, echo, peek, poke, expect, find <number>,
-// freeze, unfreeze, trace, status, hosthelp, cvars, dumpmem; v6 adds cvar,
+// freeze, unfreeze, trace, status, hosthelp, cvars, dumpmem, perf; v6 adds cvar,
 // history, again, repeat, every, autoexec, peekf, pokef, freezef, peekstr,
 // findstr, findf, fill, scan; v11 adds widescreen (ws), pause and step. Addresses are Xbox 360 guest
 // virtual addresses (hex, with or without 0x); values are big-endian as in the game.
@@ -48,6 +48,7 @@
 #include "fable2_f5_lua.h"
 #include "fable2_fit_window.h"
 #include "fable2_gui_lua.h"
+#include "fable2_perf_recorder.h"  // `perf`: frame-time stats (fable2::perfrec)
 #include "remote_input_state.h"
 
 // The SDK's `~` console (ImGui overlay) logs through REXLOG_* and can register
@@ -592,14 +593,14 @@ inline bool run_host_command(const std::string& line, uint8_t* base) {
   }
   if (name == "help") {
     out("help", "host commands: wait waitfor exec echo peek poke expect find <number> freeze unfreeze trace status cvars dumpmem "
-                "cvar history again repeat every autoexec peekf pokef freezef peekstr findstr findf fill scan widescreen pause step pad. "
+                "cvar history again repeat every autoexec peekf pokef freezef peekstr findstr findf fill scan widescreen pause step pad perf. "
                 "Chain with ';'. Lua commands follow (their text appears in the log).");
     return false;  // Lua prints its own command list too
   }
   if (name == "hosthelp") {
     out("help",
         "host commands: wait waitfor exec echo peek poke expect find freeze unfreeze trace status cvars dumpmem "
-        "cvar history again repeat every autoexec peekf pokef freezef peekstr findstr findf fill scan widescreen pause step pad. "
+        "cvar history again repeat every autoexec peekf pokef freezef peekstr findstr findf fill scan widescreen pause step pad perf. "
         "Everything else (warp, god, gold, giveall, ...) runs in Lua: type help. "
         "Separate commands with ';'. Addresses are hex guest addresses.");
     return true;
@@ -890,6 +891,45 @@ inline bool run_host_command(const std::string& line, uint8_t* base) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write(reinterpret_cast<const char*>(ta::host_addr(base, a)), static_cast<std::streamsize>(n));
     out("dumpmem", "ok: " + std::to_string(n) + " bytes -> " + p.string());
+    return true;
+  }
+  if (name == "perf") {
+    // perf [report|reset|dump [path]|overlay on|off]: frame-time statistics
+    // from the always-on recorder in fable2_perf_recorder.h (runs on this
+    // thread, the game thread, so reset/dump touch the ring lock-free).
+    const std::string sub = W.size() > 1 ? W[1] : "report";
+    if (sub == "report" || sub == "stats") {
+      std::istringstream rs(fable2::perfrec::report());
+      std::string ln;
+      while (std::getline(rs, ln)) out("perf", ln);
+      return true;
+    }
+    if (sub == "reset") {
+      fable2::perfrec::reset();
+      out("perf", "cleared (recording continues)");
+      return true;
+    }
+    if (sub == "dump") {
+      // Relative paths land under the game root (exe dir by default), like
+      // exec/dumpmem resolve them; the default is perf_dump.csv there.
+      fs::path p = W.size() > 2 ? fs::path(W[2]) : fs::path("perf_dump.csv");
+      if (p.is_relative() && !s.root.empty()) p = s.root / p;
+      const int64_t rows = fable2::perfrec::dump_csv(p);
+      if (rows < 0) out("perf", "cannot write " + p.string(), true);
+      else out("perf", std::to_string(rows) + " frames -> " + p.string());
+      return true;
+    }
+    if (sub == "overlay") {
+      const std::string arg = W.size() > 2 ? W[2] : "";
+      bool on = false;
+      if (arg == "on" || arg == "1" || arg == "true") on = true;
+      else if (arg != "off" && arg != "0" && arg != "false")
+        return out("perf", "usage: perf overlay on|off", true), true;
+      rex::cvar::SetFlagByName("perf_overlay", on ? "true" : "false");
+      out("perf", std::string("perf_overlay = ") + rex::cvar::GetFlagByName("perf_overlay"));
+      return true;
+    }
+    out("perf", "usage: perf [report|reset|dump [path]|overlay on|off]", true);
     return true;
   }
 
@@ -1579,7 +1619,7 @@ inline void poll_pause_key() {
 inline bool runs_while_paused(const std::string& line) {
   static const char* kSafe[] = { "pause", "step", "status", "echo", "hosthelp", "peek", "poke", "peekf",
                                  "pokef", "peekstr", "freeze", "freezef", "unfreeze", "cvar", "cvars",
-                                 "widescreen", "ws", "history", "dumpmem", "find", "findf", "findstr" };
+                                 "widescreen", "ws", "history", "dumpmem", "find", "findf", "findstr", "perf" };
   std::string head = line.substr(0, line.find_first_of(" \t"));
   for (auto& c : head) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   for (const char* k : kSafe)

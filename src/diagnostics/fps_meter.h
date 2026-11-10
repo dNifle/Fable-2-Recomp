@@ -24,6 +24,7 @@
 
 #include "fable2_func_trace.h"
 #include "fable2_f5_lua.h"  // F5 external-Lua run (polled per frame)
+#include "fable2_perf_recorder.h"  // frame-time recorder (always on, see below)
 
 namespace fable2::functrace_window {
 
@@ -147,5 +148,9 @@ extern "C" void MainRenderLoop_82B9CD68(PPCContext& ctx, uint8_t* base) {
   fable2::console::poll(ctx, base);
   // Main-menu mod item: keep the relabeled row's string cache fresh.
   fable2::modmenu::on_frame(base);
+  // Frame-time recorder: unconditional (a few us per frame) so `perf report`,
+  // the perf_overlay HUD and hitch logging keep working with FABLE2_FPS_METER
+  // off (fable2_perf_recorder.h).
+  fable2::perfrec::on_frame();
   __imp__MainRenderLoop_82B9CD68(ctx, base);
 }

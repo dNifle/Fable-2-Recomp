@@ -635,6 +635,7 @@ class Fable2App : public rex::ReXApp {
 
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
     // fable2::deadbeef_overlay::register_overlay(drawer);
+    fable2::perfrec::register_overlay(drawer);
   }
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
