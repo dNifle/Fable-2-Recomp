@@ -44,16 +44,37 @@ main-loop hook:
 - Optional on-screen overlay (`perf_overlay` cvar).
 - Debug builds: `perf` command on the remote-control TCP channel.
 
-## 3. Stutters (OPEN)
+## 3. Stutters (ROOT CAUSE FOUND, FIX LANDED)
 
-"Small stutters from time to time" - use the tooling from #2 to quantify and
-locate them. Suspects to check once we have CSV numbers:
-- Vulkan pipeline/state creation at runtime (the pre-baked SPIR-V set is
-  smaller than the D3D12 one; tessellation/FXAA GLSL is compiled at runtime
-  via glslang - docs/main_menu_crash_fix.md notes the slower path).
-- Texture streaming / guest-to-host uploads (see the hero/dog texture readback
-  work in plans/hero-dog-texture-readback.md).
-- Guest vblank pacing / present gating (docs/FPS_CAP_INVESTIGATION.md).
+The "small stutters from time to time" correlate 1:1 with runtime
+pipeline-state creation bursts (clean window: 2 creations; stutter window:
+34, with recurring vertex shaders across states). `vkCreateGraphicsPipelines`
+was called with `VK_NULL_HANDLE`, so the driver recompiled every shader
+permutation per pipeline state. Fixed: a persistent `VkPipelineCache`
+(`cache/shaders/shareable/<title>.vkpc`, merged at startup, saved during the
+run since the app hard-exits) - see thirdparty/rexglue-sdk-linux.patch.
+
+Related policy (user-tunable, explains the slow cold boot too):
+- `async_pipeline_wait = true` (default): draws block on in-flight pipeline
+  creation ("a short stall the first time a pipeline is needed") = the
+  stutters. false = objects pop in late instead.
+- `vulkan_async_skip_incomplete_frames = true` (default): placeholder frames
+  are not presented = the frozen/crawling cold boot. false = brief flashes.
+- Videos render fluidly because playback uses a small stable pipeline set.
+
+Verified: create -> periodic save (14.6 KB after a menu session) -> "warmed
+from ... .vkpc" merge on the next run. Next: measure gameplay hitches with
+`perf` on a warm and a cold cache; if first-encounter hitches stay
+perceptible, pre-translate the game's shader set during loading screens.
+
+## 3b. Boot polish (OPEN)
+
+- The window opens 1600x900 and only later becomes fullscreen; the guest
+  reaches the intro videos before the transition completes ("window slowly
+  stretches", videos before fullscreen). Fix: open the window fullscreen
+  from the start.
+- Cold boot has no visual feedback while shader translation + pipeline
+  prewarm run.
 
 ## 4. Performance improvements (OPEN)
 
