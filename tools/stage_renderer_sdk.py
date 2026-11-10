@@ -25,6 +25,29 @@ def sdk_platform():
     return f"linux-{arch}"
 
 
+def artifact_names(configuration):
+    """Install artifact names for the host platform (also used by the tests)."""
+    suffix = "d" if configuration == "Debug" else ""
+    if sys.platform == "win32":
+        return {
+            "stem": (f"rexruntime{suffix}", f"rexgpu-xenos{suffix}"),
+            "runtime": f"rexruntime{suffix}.dll",
+            "plugin": f"rexgpu-xenos{suffix}.dll",
+            "runtime_lib": f"rexruntime{suffix}.lib",
+            "plugin_lib": f"rexgpu-xenos{suffix}.lib",
+            "tool": "rexglue.exe",
+        }
+    ext = "dylib" if sys.platform == "darwin" else "so"
+    return {
+        "stem": (f"librexruntime{suffix}", f"librexgpu-xenos{suffix}"),
+        "runtime": f"librexruntime{suffix}.{ext}",
+        "plugin": f"librexgpu-xenos{suffix}.{ext}",
+        "runtime_lib": None,
+        "plugin_lib": None,
+        "tool": "rexglue",
+    }
+
+
 def lib_dirs(output):
     """Candidate install lib dirs (GNUInstallDirs picks lib or lib64)."""
     return [output / "lib64", output / "lib"]
@@ -55,14 +78,9 @@ def main():
     args = parser.parse_args()
     source, output = args.source.resolve(), args.output.resolve()
     native = source / "out" / sdk_platform()
-    suffix = "d" if args.configuration == "Debug" else ""
-    if sys.platform == "win32":
-        runtime, plugin, tool = f"rexruntime{suffix}.dll", f"rexgpu-xenos{suffix}.dll", "rexglue.exe"
-        runtime_lib, plugin_lib = f"rexruntime{suffix}.lib", f"rexgpu-xenos{suffix}.lib"
-    else:
-        ext = "dylib" if sys.platform == "darwin" else "so"
-        runtime, plugin, tool = f"librexruntime{suffix}.{ext}", f"librexgpu-xenos{suffix}.{ext}", "rexglue"
-        runtime_lib = plugin_lib = None
+    names = artifact_names(args.configuration)
+    runtime, plugin, tool = names["runtime"], names["plugin"], names["tool"]
+    runtime_lib, plugin_lib = names["runtime_lib"], names["plugin_lib"]
     required = [find_one(output, runtime, "lib"), find_one(output, plugin, "lib"),
                 find_one(output, "rex/version.h", "include"),
                 find_one(output, "rexglueConfig.cmake", "cmake")]
@@ -76,10 +94,12 @@ def main():
             raise SystemExit(f"Missing build input: {path or 'required artifact not found under ' + str(output)}")
     runtime_path, plugin_path = required[0], required[1]
     # Carry the PDBs (when present) so the host build can stage them next to
-    # the exe for debugger/profiler symbolization.
-    for name in (f"{runtime}.pdb", f"{plugin}.pdb"):
-        if (native / name).is_file():
-            shutil.copy2(native / name, output / "bin" / name)
+    # the exe for debugger/profiler symbolization (PE builds only; ELF/Mach-O
+    # builds carry their debug info differently).
+    if sys.platform == "win32":
+        for name in (f"{names['stem'][0]}.pdb", f"{names['stem'][1]}.pdb"):
+            if (native / name).is_file():
+                shutil.copy2(native / name, output / "bin" / name)
     revision = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     provenance = {
         "configuration": args.configuration,

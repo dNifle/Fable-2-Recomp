@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,12 +15,29 @@ spec = importlib.util.spec_from_file_location("staging", ROOT / "tools/stage_ren
 staging = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(staging)
 
+# Install artifact names and locations differ per platform (the script's
+# artifact_names() is the single source of truth; see tools/stage_renderer_sdk.py).
+RELEASE_NAMES = staging.artifact_names("Release")
+DEBUG_NAMES = staging.artifact_names("Debug")
+
+
+def install_rel(name):
+    """Install location of an artifact name inside the install prefix."""
+    if name.endswith((".lib", ".so", ".dylib")):
+        return f"lib/{name}"
+    return f"bin/{name}"  # .dll / .exe / the bare rexglue tool
+
+
 SHARED_FILES = ["include/rex/version.h", "lib/cmake/rexglue/rexglueConfig.cmake"]
-RELEASE_FILES = SHARED_FILES + ["bin/rexglue.exe", "bin/rexruntime.dll", "bin/rexgpu-xenos.dll",
-                                "lib/rexruntime.lib", "lib/rexgpu-xenos.lib"]
-# Only Release installs the codegen tool (rexglue.exe).
-DEBUG_FILES = SHARED_FILES + ["bin/rexruntimed.dll", "bin/rexgpu-xenosd.dll",
-                              "lib/rexruntimed.lib", "lib/rexgpu-xenosd.lib"]
+RELEASE_FILES = SHARED_FILES + [install_rel(n) for n in
+                                (RELEASE_NAMES["tool"], RELEASE_NAMES["runtime"], RELEASE_NAMES["plugin"],
+                                 *([RELEASE_NAMES["runtime_lib"], RELEASE_NAMES["plugin_lib"]]
+                                   if RELEASE_NAMES["runtime_lib"] else ()))]
+# Only Release installs the codegen tool (rexglue / rexglue.exe).
+DEBUG_FILES = SHARED_FILES + [install_rel(n) for n in
+                              (DEBUG_NAMES["runtime"], DEBUG_NAMES["plugin"],
+                               *([DEBUG_NAMES["runtime_lib"], DEBUG_NAMES["plugin_lib"]]
+                                 if DEBUG_NAMES["runtime_lib"] else ()))]
 
 
 def make_install(output, names):
@@ -48,26 +66,33 @@ def sha256_of(path):
 
 class RuntimeStagingTests(unittest.TestCase):
     def stage(self, configuration, missing=None):
+        names = DEBUG_NAMES if configuration == "Debug" else RELEASE_NAMES
         with tempfile.TemporaryDirectory(prefix="fable2-sdk-test-") as directory:
             base = Path(directory)
             source, output = base / "source", base / "output"
-            suffix = "d" if configuration == "Debug" else ""
-            names = [f"{stem}{suffix}.{extension}" for stem in ("rexruntime", "rexgpu-xenos")
-                     for extension in ("dll", "lib", "pdb")]
-            if configuration == "Release":
-                names.append("rexglue.exe")
+            if sys.platform == "win32":
+                stems = names["stem"]
+                fixtures = [f"{stem}.{extension}" for stem in stems
+                            for extension in ("dll", "lib", "pdb")]
+                if configuration == "Release":
+                    fixtures.append(names["tool"])
+            else:
+                # ELF/Mach-O builds carry their debug info in the libraries
+                # themselves: no import libs, no separate symbol files.
+                fixtures = [names["runtime"], names["plugin"]]
+                if configuration == "Release":
+                    fixtures.append(names["tool"])
             files = {
                 output / "include/rex/version.h": "version",
                 output / "lib/cmake/rexglue/rexglueConfig.cmake": "config",
             }
-            for name in names:
+            for name in fixtures:
                 if name == missing:
                     continue
                 if name.endswith(".pdb"):
-                    files[source / "out/win-amd64" / name] = "symbols-" + name
+                    files[source / "out" / staging.sdk_platform() / name] = "symbols-" + name
                 else:
-                    folder = "lib" if name.endswith(".lib") else "bin"
-                    files[output / folder / name] = "built-" + name
+                    files[output / install_rel(name)] = "built-" + name
             for path, value in files.items():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(value)
@@ -80,9 +105,10 @@ class RuntimeStagingTests(unittest.TestCase):
                     self.assertFalse((output / "renderer-sdk-provenance.json").exists())
                     return
                 staging.main()
-            for stem in ("rexruntime", "rexgpu-xenos"):
-                name = f"{stem}{suffix}.pdb"
-                self.assertEqual((output / "bin" / name).read_text(), "symbols-" + name)
+            if sys.platform == "win32":
+                for stem in names["stem"]:
+                    name = f"{stem}.pdb"
+                    self.assertEqual((output / "bin" / name).read_text(), "symbols-" + name)
             provenance = json.loads((output / "renderer-sdk-provenance.json").read_text())
             self.assertEqual(provenance["configuration"], configuration)
             self.assertEqual(provenance["sdk_commit"], "synthetic-revision")
@@ -91,11 +117,7 @@ class RuntimeStagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="fable2-sdk-test-") as directory:
             base = Path(directory)
             source, output, stamp = base / "source", base / "output", base / "codegen.stamp"
-            files = ["include/rex/version.h", "lib/cmake/rexglue/rexglueConfig.cmake", "bin/rexglue.exe",
-                     "bin/rexruntime.dll", "bin/rexgpu-xenos.dll", "lib/rexruntime.lib", "lib/rexgpu-xenos.lib"]
-            for name in files:
-                (output / name).parent.mkdir(parents=True, exist_ok=True)
-                (output / name).write_text("built")
+            make_install(output, RELEASE_FILES)
             args = ["stage_renderer_sdk.py", str(source), str(output), "--codegen-stamp", str(stamp)]
 
             def run():
@@ -107,7 +129,7 @@ class RuntimeStagingTests(unittest.TestCase):
             stamp.write_text("fingerprint")
             run()
             self.assertTrue(stamp.exists())
-            (output / "bin/rexglue.exe").write_text("rebuilt")
+            (output / install_rel(RELEASE_NAMES["tool"])).write_text("rebuilt")
             run()
             self.assertFalse(stamp.exists())
 
@@ -118,13 +140,15 @@ class RuntimeStagingTests(unittest.TestCase):
         self.stage("Release")
 
     def test_missing_release_tool_fails(self):
-        self.stage("Release", missing="rexglue.exe")
+        self.stage("Release", missing=RELEASE_NAMES["tool"])
 
     def test_missing_debug_runtime_fails(self):
-        self.stage("Debug", missing="rexruntimed.dll")
+        self.stage("Debug", missing=DEBUG_NAMES["runtime"])
 
-    def test_missing_debug_plugin_library_fails(self):
-        self.stage("Debug", missing="rexgpu-xenosd.lib")
+    def test_missing_debug_plugin_artifact_fails(self):
+        # Windows stages the plugin import lib separately; other platforms only
+        # ship the plugin library itself.
+        self.stage("Debug", missing=DEBUG_NAMES["plugin_lib"] or DEBUG_NAMES["plugin"])
 
 
 class RuntimeStagingRecordTests(unittest.TestCase):
@@ -133,9 +157,9 @@ class RuntimeStagingRecordTests(unittest.TestCase):
             source, output = Path(directory) / "source", Path(directory) / "output"
             make_install(output, RELEASE_FILES)
             record = run_staging(source, output)
-            runtime_hash = sha256_of(output / "bin/rexruntime.dll")
-            plugin_hash = sha256_of(output / "bin/rexgpu-xenos.dll")
-            tool_hash = sha256_of(output / "bin/rexglue.exe")
+            runtime_hash = sha256_of(output / install_rel(RELEASE_NAMES["runtime"]))
+            plugin_hash = sha256_of(output / install_rel(RELEASE_NAMES["plugin"]))
+            tool_hash = sha256_of(output / install_rel(RELEASE_NAMES["tool"]))
 
         self.assertEqual(record["runtime_sha256"], runtime_hash)
         self.assertEqual(record["plugin_sha256"], plugin_hash)
@@ -146,8 +170,8 @@ class RuntimeStagingRecordTests(unittest.TestCase):
             source, output = Path(directory) / "source", Path(directory) / "output"
             make_install(output, DEBUG_FILES)
             record = run_staging(source, output, "--configuration", "Debug")
-            runtime_hash = sha256_of(output / "bin/rexruntimed.dll")
-            plugin_hash = sha256_of(output / "bin/rexgpu-xenosd.dll")
+            runtime_hash = sha256_of(output / install_rel(DEBUG_NAMES["runtime"]))
+            plugin_hash = sha256_of(output / install_rel(DEBUG_NAMES["plugin"]))
 
         self.assertEqual(record["runtime_sha256"], runtime_hash)
         self.assertEqual(record["plugin_sha256"], plugin_hash)
@@ -161,7 +185,7 @@ class RuntimeStagingRecordTests(unittest.TestCase):
         self.assertNotIn("codegen_tool_sha256", record)
 
     def test_staging_works_without_symbols(self):
-        # PDBs are optional: the source folder has no out/win-amd64 build output at all.
+        # PDBs are optional: the source folder has no out/<platform> build output at all.
         with tempfile.TemporaryDirectory(prefix="fable2-sdk-test-") as directory:
             source, output = Path(directory) / "source", Path(directory) / "output"
             make_install(output, RELEASE_FILES)
