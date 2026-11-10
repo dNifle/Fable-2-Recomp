@@ -110,6 +110,11 @@ class Fable2App : public rex::ReXApp {
   //   --gpu_plugin=xenos-vulkan     Vulkan
   void OnPreSetup(rex::RuntimeConfig& config) override {
     std::string plugin = config.gpu_plugin.empty() ? "xenos" : config.gpu_plugin;
+#ifndef _WIN32
+    // Non-Windows builds ship one plugin (Vulkan-backed), so the Windows
+    // "xenos-vulkan" spelling maps onto it - same backend, same behavior.
+    if (plugin == "xenos-vulkan") plugin = "xenos";
+#endif
     config.gpu_plugin = plugin;
     if (plugin == "xenos-vulkan") {
       // Load the source-built plugin and force the Vulkan backend. It is
