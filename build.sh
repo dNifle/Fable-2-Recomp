@@ -137,3 +137,19 @@ if [ ! -f generated/default/sources.cmake ]; then
     cmake "out/build/$CONFIG"
 fi
 cmake --build "out/build/$CONFIG" --target "$TARGET"
+
+# The CMake POST_BUILD staging only runs when fable_2 relinks, but the SDK
+# runtime and GPU plugin can change on their own (build_runtime_sdk.sh
+# rebuilds them every run). Sync them so the build dir never loads a stale
+# plugin/runtime.
+if [ "$TARGET" = "fable_2" ]; then
+    LIBDIR="$(dirname "$(dirname "$REXGLUE_DIR")")"
+    case "$CONFIG" in
+        *-debug)          SDK_SUFFIX="d" ;;
+        *-relwithdebinfo) SDK_SUFFIX="rd" ;;
+        *)                SDK_SUFFIX="" ;;
+    esac
+    for lib in librexruntime librexgpu-xenos; do
+        cp -f "$LIBDIR/${lib}${SDK_SUFFIX}.so" "out/build/$CONFIG/" || exit 1
+    done
+fi
