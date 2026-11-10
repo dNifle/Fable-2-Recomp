@@ -44,7 +44,9 @@
 //   0x822426E0  wait loop: GpuProgressCheck_82B9BF90 (0 = ready -> leave),
 //               else re-run the readiness test and spin while not ready.
 //   0x8224270C  call sub_82B9BEC8(r1+80), then the epilogue at 0x82242714.
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include "fable_2_pch.h"
 
@@ -162,8 +164,20 @@ void BuildArgBlock(PPCContext& ctx, uint8_t* base) {
 
 // Sleep and waits round to scheduler ticks and would overshoot the frame
 // deadline, so spin with PAUSE instead. Touches no guest state.
+inline void SpinHint() {
+#ifdef _WIN32
+  YieldProcessor();
+#elif defined(__x86_64__) || defined(__i386__)
+  __builtin_ia32_pause();
+#elif defined(__aarch64__)
+  asm volatile("yield" ::: "memory");
+#else
+  asm volatile("" ::: "memory");
+#endif
+}
+
 void SpinPause() {
-  for (int i = 0; i < kPauseSpins; ++i) YieldProcessor();
+  for (int i = 0; i < kPauseSpins; ++i) SpinHint();
 }
 
 // addi r1,r1,144; b __restgprlr_29 (0x82242714).

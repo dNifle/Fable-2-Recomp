@@ -36,7 +36,9 @@
 #ifndef FABLE2_AV_PROBE_H
 #define FABLE2_AV_PROBE_H
 
+#ifdef _WIN32
 #include <Windows.h>
+#endif
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -82,6 +84,7 @@ inline bool in_guest_mem(u64 addr) {
 // VirtualQuery-guarded 64-bit read. Never raises an AV: if the page is not
 // committed (or the range spans regions) we return false without touching it.
 inline bool safe_read64(void* p, u64& out) {
+#ifdef _WIN32
   MEMORY_BASIC_INFORMATION mbi{};
   if (VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return false;
   if (mbi.State != MEM_COMMIT) return false;
@@ -91,6 +94,13 @@ inline bool safe_read64(void* p, u64& out) {
   if (addr + 8 > end) return false;
   out = *reinterpret_cast<u64*>(p);
   return true;
+#else
+  // No VirtualQuery (and no VEH) on Linux; the AV probe is Windows-only, so
+  // never touch the candidate memory.
+  (void)p;
+  (void)out;
+  return false;
+#endif
 }
 
 // A register value is a live PPCContext iff:
@@ -100,6 +110,7 @@ inline bool safe_read64(void* p, u64& out) {
 //   - its r1 is a plausible guest stack pointer, and
 //   - its lr is in the guest code range.
 inline bool is_guest_ctx(u64 p) {
+#ifdef _WIN32
   if (p < 0x40ull || (p & 0x3Full) != 0) return false;
   if (in_guest_mem(p)) return false;
   MEMORY_BASIC_INFORMATION mbi{};
@@ -113,6 +124,11 @@ inline bool is_guest_ctx(u64 p) {
   if (r1 < kGuestStackMin || r1 > kGuestStackMax) return false;
   lr = *reinterpret_cast<u64*>(p + kLROffset);
   return lr >= kGuestCodeMin && lr <= kGuestCodeMax;
+#else
+  // No VEH on Linux; the AV probe is Windows-only (see safe_read64).
+  (void)p;
+  return false;
+#endif
 }
 
 struct ProbeState {
@@ -175,6 +191,7 @@ inline bool should_log(u64 fault, u64 rip) {
   return s.counts[slot] <= 10 || (s.counts[slot] & 0x7FF) == 0;
 }
 
+#ifdef _WIN32
 LONG WINAPI handler(EXCEPTION_POINTERS* ep) {
   if (!ep || !ep->ExceptionRecord) return EXCEPTION_CONTINUE_SEARCH;
   if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
@@ -268,8 +285,10 @@ LONG WINAPI handler(EXCEPTION_POINTERS* ep) {
   s.locked = false;
   return EXCEPTION_CONTINUE_SEARCH;
 }
+#endif  // _WIN32 (the VEH handler is Windows-only)
 
 struct Registrar {
+#ifdef _WIN32
   Registrar() {
     state().module_base = reinterpret_cast<u64>(GetModuleHandleA(nullptr));
     char dir[MAX_PATH] = {0};
@@ -298,6 +317,10 @@ struct Registrar {
   ~Registrar() {
     if (state().log) fclose(state().log);
   }
+#else
+  // AddVectoredExceptionHandler is Windows-only; on Linux no handler is
+  // installed and the probe is a silent no-op.
+#endif
 };
 
 // One instance per including TU (header is #pragma once and only included

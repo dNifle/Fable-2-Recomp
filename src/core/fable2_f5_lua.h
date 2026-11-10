@@ -50,8 +50,12 @@ inline uint32_t guest_alloc(PPCContext& ctx, uint8_t* base, size_t size);
 #ifdef _WIN32
 #include <windows.h>
 #include <share.h>
-#define FABLE2_F5_VK 0x74  // VK_F5
 #endif
+
+#include "host_key_state.h"  // fable2::hostkeys (portable key state)
+
+// VK_F5 in rex::ui::VirtualKey numbering (which mirrors the Windows VKs).
+#define FABLE2_F5_VK 0x74
 
 // External Lua file to run on F5. Path is resolved by CScriptManager::RunScript
 // relative to the VFS root (data/). Default lands at
@@ -134,10 +138,12 @@ inline void logline(const char* fmt, ...) {
 inline void poll_f5(bool focused) {
 #ifdef _WIN32
   const bool down = focused && (GetAsyncKeyState(FABLE2_F5_VK) & 0x8000) != 0;
+#else
+  const bool down = focused && hostkeys::KeyHeld(FABLE2_F5_VK);
+#endif
   const bool edge = down && !g_f5_down_prev;
   g_f5_down_prev = down;
   if (edge) g_f5_pending.store(true);
-#endif
 }
 
 // Run the external Lua file via the captured CScriptManager::RunScript.

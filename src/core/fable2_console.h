@@ -1560,6 +1560,17 @@ inline void poll_pause_key() {
   s.paused = !s.paused;
   s.step_frames = 0;
   out("pause", s.paused ? "paused (F9)" : "running (F9)");
+#else
+  static bool prev = false;
+  const bool down = hostkeys::KeyHeld(0x78 /* VK_F9 */);
+  const bool edge = down && !prev;
+  prev = down;
+  if (!edge) return;
+  if (!hostkeys::GameWindowFocused()) return;
+  State& s = S();
+  s.paused = !s.paused;
+  s.step_frames = 0;
+  out("pause", s.paused ? "paused (F9)" : "running (F9)");
 #endif
 }
 

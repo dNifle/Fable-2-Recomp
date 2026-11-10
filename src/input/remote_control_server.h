@@ -59,7 +59,9 @@ inline void CloseSock(sock_t s) {
 }
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 using sock_t = int;
@@ -113,6 +115,14 @@ namespace fable2::remote {
 //=============================================================================
 namespace json_min {
 
+struct Value;
+// Object member (key, value). A named struct instead of std::pair, and a
+// vector of it is fine while it is only forward-declared here (std::pair
+// would need a complete second type at this point - MSVC tolerates that,
+// libstdc++ rejects it). Defined below, once Value is complete. The
+// first/second field names keep the std::pair call sites reading the same.
+struct Member;
+
 struct Value {
   enum class Type { Null, Bool, Number, String, Array, Object };
   Type type = Type::Null;
@@ -120,13 +130,10 @@ struct Value {
   double number = 0.0;
   std::string str;
   std::vector<Value> arr;
-  std::vector<std::pair<std::string, Value>> obj;
+  std::vector<Member> obj;
 
-  const Value* Find(std::string_view key) const {
-    for (const auto& kv : obj)
-      if (kv.first == key) return &kv.second;
-    return nullptr;
-  }
+  // Defined below: iterating obj needs Member complete.
+  const Value* Find(std::string_view key) const;
   const std::string* FindStr(std::string_view key) const {
     const Value* v = Find(key);
     return (v && v->type == Type::String) ? &v->str : nullptr;
@@ -153,6 +160,19 @@ struct Value {
     return def;
   }
 };
+
+struct Member {
+  std::string first;
+  Value second;
+  Member(std::string key, Value value)
+      : first(std::move(key)), second(std::move(value)) {}
+};
+
+inline const Value* Value::Find(std::string_view key) const {
+  for (const auto& kv : obj)
+    if (kv.first == key) return &kv.second;
+  return nullptr;
+}
 
 class Parser {
  public:

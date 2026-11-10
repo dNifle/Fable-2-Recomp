@@ -47,6 +47,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <intrin.h>
+#else
+#include <unistd.h>  // gettid() for the stall-dump telemetry
 #endif
 
 #include <rex/ppc/context.h>
@@ -306,7 +308,6 @@ inline int64_t now_us() {
 
 // Render-activity telemetry for the stall detector (fable2_stall_dump.h):
 // updated on EVERY hook call, even when the probe itself is disabled.
-#ifdef _WIN32
 inline std::atomic<int64_t>& last_hook_us() {
   static std::atomic<int64_t> v{0};
   return v;
@@ -315,7 +316,6 @@ inline std::atomic<uint32_t>& last_hook_tid() {
   static std::atomic<uint32_t> v{0};
   return v;
 }
-#endif
 
 struct State {
   int64_t t0_us = 0;
@@ -452,13 +452,18 @@ inline bool gread(const uint8_t* /*base*/, uint32_t addr, void* dst, size_t n) {
   // Reject protections that fault on read (NOACCESS, guard pages).
   if (mbi.Protect == PAGE_NOACCESS) return false;
   if (mbi.Protect & PAGE_GUARD) return false;
-#endif
   __try {
     std::memcpy(dst, h, n);
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
+#else
+  // No SEH on Linux; the fixed arena mapping is plain RW (demand-zero pages),
+  // so read it directly like the other probes' non-Windows page checks.
+  std::memcpy(dst, h, n);
+  return true;
+#endif
 }
 
 inline bool valid_addr(uint32_t a) {
@@ -669,6 +674,7 @@ inline bool dump_hop_on() {
     const char* v = std::getenv("FABLE2_UIR_IN_HOP");
     return v != nullptr && v[0] == '1';
   }();
+  return on;
 #endif
 }
 
@@ -836,6 +842,10 @@ inline void scan(const char* name, PPCContext& ctx, uint8_t* base) {
   last_hook_us().store(now_us(), std::memory_order_relaxed);
   last_hook_tid().store((uint32_t)::GetCurrentThreadId(),
                         std::memory_order_relaxed);
+#else
+  // Same telemetry without GetCurrentThreadId; gettid() from <unistd.h>.
+  last_hook_us().store(now_us(), std::memory_order_relaxed);
+  last_hook_tid().store((uint32_t)::gettid(), std::memory_order_relaxed);
 #endif
   if (!enabled()) return;
   init_once();

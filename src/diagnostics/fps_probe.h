@@ -17,35 +17,18 @@
 #include <rex/logging.h>
 #include <rex/ppc/func.h>
 
-#include <windows.h>
+#ifdef _WIN32
+#include <windows.h>  // MEMORY_BASIC_INFORMATION for the guarded probe read
+#endif
 
 namespace fable2::fpsprobe {
 
-// Always-original entry points (strong symbols in the generated code).
-extern "C" void __imp__MainRenderLoop_82B9CD68(PPCContext& ctx, uint8_t* base);  // main loop (calls VdSwap); renamed from sub_82B9CD68
-extern "C" void __imp__DelayMilliseconds_82CC2028(PPCContext& ctx, uint8_t* base);  // KeDelayExecutionThread wrapper
-extern "C" void __imp__Yield_82CBD098(PPCContext& ctx, uint8_t* base);  // NtYieldExecution wrapper
-extern "C" void __imp__sub_83004C20(PPCContext& ctx, uint8_t* base);  // NtSetTimerEx wrapper
-extern "C" void __imp__sub_83004C90(PPCContext& ctx, uint8_t* base);  // NtCreateTimer wrapper
-extern "C" void __imp__ProcessAndProcessAndProcess1260_82BA32C8(PPCContext& ctx, uint8_t* base);  // per-frame helper (calls the frame-wait)
-extern "C" void __imp__sub_82BA2568(PPCContext& ctx, uint8_t* base);  // frame-wait (KeQuerySystemTime poller)
-extern "C" void __imp__sub_82B9B8D8(PPCContext& ctx, uint8_t* base);  // vblank/GPU interrupt callback
-extern "C" void __imp__sub_82CC2948(PPCContext& ctx, uint8_t* base);  // GPU CPU-interrupt cb: KeSetEvent (render thread waker?)
-extern "C" void __imp__sub_82B9F598(PPCContext& ctx, uint8_t* base);  // main render thread loop (KeWaitForSingleObject + render)
-// Helpers called directly by the main render loop - measured to find the 33ms wait.
-extern "C" void __imp__ProcessAndProcessAndProcess1261_82BA6F08(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__ProcessAndProcessAndProcess1256_82BA8630(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__ProcessAndProcessAndProcess1257_821D17B8(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__ProcessAndProcessAndProcess1087_82242628(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__ProcessAndProcessAndProcess523_82B9BF90(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_82B9BEC8(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__ProcessAndProcessAndProcess1263_82BA8350(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__ProcessAndProcessAndProcess1046_822A6318(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__MemSet_SdkRuntime_82CA3190(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_82B9CB88(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__ProcessAndProcessAndProcess1258_82B9C7F8(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__ProcessAndProcessAndProcess1259_82B9C9D8(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_821E8D20(PPCContext& ctx, uint8_t* base);
+// NOTE: the __imp__ declarations that used to live here were moved to global
+// scope (below) -- extern "C" entities have C linkage regardless of the
+// enclosing namespace, and every call site is at global scope, so declaring
+// them inside the namespace left the calls unqualified-but-unfindable.
+// (This header is currently included nowhere; the include in
+//  src/core/fable_2_app.h is commented out.)
 
 struct Probe {
   const char* name;
@@ -161,6 +144,34 @@ inline void note_exit(Probe& p) {
 
 }  // namespace fable2::fpsprobe
 
+// Always-original entry points (strong symbols in the generated code).
+// Declared at global scope so the unqualified calls below resolve (extern "C"
+// linkage is namespace-independent; only name lookup cares).
+extern "C" void __imp__MainRenderLoop_82B9CD68(PPCContext& ctx, uint8_t* base);  // main loop (calls VdSwap); renamed from sub_82B9CD68
+extern "C" void __imp__DelayMilliseconds_82CC2028(PPCContext& ctx, uint8_t* base);  // KeDelayExecutionThread wrapper
+extern "C" void __imp__Yield_82CBD098(PPCContext& ctx, uint8_t* base);  // NtYieldExecution wrapper
+extern "C" void __imp__sub_83004C20(PPCContext& ctx, uint8_t* base);  // NtSetTimerEx wrapper
+extern "C" void __imp__sub_83004C90(PPCContext& ctx, uint8_t* base);  // NtCreateTimer wrapper
+extern "C" void __imp__ProcessAndProcessAndProcess1260_82BA32C8(PPCContext& ctx, uint8_t* base);  // per-frame helper (calls the frame-wait)
+extern "C" void __imp__sub_82BA2568(PPCContext& ctx, uint8_t* base);  // frame-wait (KeQuerySystemTime poller)
+extern "C" void __imp__sub_82B9B8D8(PPCContext& ctx, uint8_t* base);  // vblank/GPU interrupt callback
+extern "C" void __imp__sub_82CC2948(PPCContext& ctx, uint8_t* base);  // GPU CPU-interrupt cb: KeSetEvent (render thread waker?)
+extern "C" void __imp__sub_82B9F598(PPCContext& ctx, uint8_t* base);  // main render thread loop (KeWaitForSingleObject + render)
+// Helpers called directly by the main render loop - measured to find the 33ms wait.
+extern "C" void __imp__ProcessAndProcessAndProcess1261_82BA6F08(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__ProcessAndProcessAndProcess1256_82BA8630(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__ProcessAndProcessAndProcess1257_821D17B8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__ProcessAndProcessAndProcess1087_82242628(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__ProcessAndProcessAndProcess523_82B9BF90(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82B9BEC8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__ProcessAndProcessAndProcess1263_82BA8350(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__ProcessAndProcessAndProcess1046_822A6318(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__MemSet_SdkRuntime_82CA3190(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82B9CB88(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__ProcessAndProcessAndProcess1258_82B9C7F8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__ProcessAndProcessAndProcess1259_82B9C9D8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_821E8D20(PPCContext& ctx, uint8_t* base);
+
 // Strong overrides: every generated call site of sub_X now lands here.
 extern "C" void MainRenderLoop_82B9CD68(PPCContext& ctx, uint8_t* base) {
   fable2::fpsprobe::note(fable2::fpsprobe::probe_main_loop, ctx);
@@ -216,6 +227,7 @@ extern "C" void ProcessAndProcessAndProcess1087_82242628(PPCContext& ctx, uint8_
     auto read32 = [&](uint32_t g) -> uint32_t {
       if (g == 0) return 0xFFFFFFFF;
       uint32_t off = (g >= 0xE0000000u) ? 0x1000u : 0u;
+#ifdef _WIN32
       volatile uint32_t* p = reinterpret_cast<volatile uint32_t*>(base + g + off);
       MEMORY_BASIC_INFORMATION mbi{};
       if (::VirtualQuery(const_cast<void*>(reinterpret_cast<volatile void*>(p)), &mbi,
@@ -223,6 +235,12 @@ extern "C" void ProcessAndProcessAndProcess1087_82242628(PPCContext& ctx, uint8_
         return 0xFFFFFFFF;
       if (mbi.State != MEM_COMMIT) return 0xFFFFFFFF;
       return __builtin_bswap32(*p);
+#else
+      // No VirtualQuery on Linux; skip the guarded read rather than risk a
+      // SIGSEGV on an unmapped candidate address (the probe logs 0xFF..FF).
+      (void)off;
+      return 0xFFFFFFFF;
+#endif
     };
     uint32_t lp = ctx.r3.u32;   // limit* (r3 at entry; r31 set inside)
     uint32_t now4 = ctx.r4.u32;
@@ -241,7 +259,7 @@ extern "C" void ProcessAndProcessAndProcess1087_82242628(PPCContext& ctx, uint8_
         std::lock_guard<std::mutex> l(log_mutex());
         char buf[256];
         snprintf(buf, sizeof(buf), "counter gfc=%08X dg=%lld over %.1fms (rate %.2f/s)\n",
-                 gfc, dg, dt, dt > 0 ? (double)dg / (dt / 1000.0) : 0.0);
+                 gfc, (long long)dg, dt, dt > 0 ? (double)dg / (dt / 1000.0) : 0.0);
         log_file() << buf;
         log_file().flush();
       }

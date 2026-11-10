@@ -16,9 +16,12 @@
 #ifndef FABLE2_STALL_DUMP_H
 #define FABLE2_STALL_DUMP_H
 
+#ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
+#endif
 #include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -78,6 +81,7 @@ struct ModuleRange {
 inline const std::vector<ModuleRange>& modules() {
   static const std::vector<ModuleRange> v = [] {
     std::vector<ModuleRange> out;
+#ifdef _WIN32
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
     if (snap == INVALID_HANDLE_VALUE) return out;
     MODULEENTRY32W me{};
@@ -92,6 +96,10 @@ inline const std::vector<ModuleRange>& modules() {
       } while (Module32NextW(snap, &me));
     }
     CloseHandle(snap);
+#else
+    // Toolhelp32 module snapshots are Windows-only; without them fmt_ip
+    // labels every address "(none)" (module attribution is lost on Linux).
+#endif
     return out;
   }();
   return v;
@@ -109,6 +117,7 @@ inline void fmt_ip(FILE* f, const char* tag, uintptr_t ip) {
 }
 
 inline bool safe_read(const void* p, void* dst, size_t n) {
+#ifdef _WIN32
   MEMORY_BASIC_INFORMATION mbi{};
   if (VirtualQuery(const_cast<void*>(p), &mbi, sizeof(mbi)) == 0) return false;
   if (mbi.State != MEM_COMMIT) return false;
@@ -116,9 +125,18 @@ inline bool safe_read(const void* p, void* dst, size_t n) {
   if ((uintptr_t)p + n > start + (uintptr_t)mbi.RegionSize) return false;
   std::memcpy(dst, p, n);
   return true;
+#else
+  // VirtualQuery is Windows-only; only the Windows-only dump_threads() below
+  // would call this, so refuse instead of risking an unguarded read.
+  (void)p;
+  (void)dst;
+  (void)n;
+  return false;
+#endif
 }
 
 inline void dump_threads(uint32_t render_tid) {
+#ifdef _WIN32
   const int64_t unix_ms = (int64_t)GetTickCount64();
   sline("# stall dump unix_ms=%lld render_tid=0x%08X", (long long)unix_ms,
         render_tid);
@@ -165,15 +183,29 @@ inline void dump_threads(uint32_t render_tid) {
     } while (Thread32Next(snap, &te));
   }
   CloseHandle(snap);
+#else
+  // Toolhelp thread snapshots + SuspendThread/GetThreadContext are
+  // Windows-only; on Linux there is no portable per-thread register dump, so
+  // only the "== STALL" line is written (stall detection still works).
+  (void)render_tid;
+#endif
 }
 
 inline void loop() {
+#ifdef _WIN32
   Sleep(3000);
+#else
+  std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+#endif
   sline("== stall dumper thread alive");
   int64_t last_dump_us = 0;
   int dumps = 0;
   while (dumps < 40) {
+#ifdef _WIN32
     Sleep(1000);
+#else
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+#endif
     const int64_t last =
         fable2::uip::last_hook_us().load(std::memory_order_relaxed);
     if (last == 0) continue;

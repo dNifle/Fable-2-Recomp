@@ -33,11 +33,17 @@ static double td_now() {
 
 static uint32_t td_rd(uint32_t a) {
   uint32_t v = 0;
+#ifdef _WIN32
   __try {
     v = __builtin_bswap32(*(volatile uint32_t*)(0x100000000ull + a));
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return 0xCCCCCCCC;
   }
+#else
+  // No SEH on Linux; the fixed 4 GiB arena mapping is plain RW (demand-zero
+  // pages), so read it directly like the other probes' non-Windows paths.
+  v = __builtin_bswap32(*(volatile uint32_t*)(0x100000000ull + a));
+#endif
   return v;
 }
 

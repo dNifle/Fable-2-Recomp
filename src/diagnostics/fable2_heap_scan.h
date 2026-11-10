@@ -160,6 +160,9 @@ static void needle_search(uint8_t* hp, size_t len, uint32_t guest_lo) {
   if (g_scan_log) std::fflush(g_scan_log);
 }
 
+#ifdef _WIN32
+// No __try/__except on Linux; only the Windows region walk (scan_all) calls
+// this, so the SEH-guarded scanner is compiled out there.
 __declspec(noinline) void seh_dump_runs(uint8_t* hp, size_t len,
                                         uint32_t guest_lo) {
   __try {
@@ -222,6 +225,7 @@ __declspec(noinline) void seh_dump_runs(uint8_t* hp, size_t len,
     if (g_scan_log) std::fflush(g_scan_log);
   }
 }
+#endif  // _WIN32
 
 }  // extern "C"
 
@@ -275,6 +279,7 @@ inline void scan_all() {
   std::fputs(hdr, f);
   std::fflush(f);
 
+#ifdef _WIN32
   uint8_t* region = reinterpret_cast<uint8_t*>(kArenaHostBase);
   const size_t total = 0x100000000ull;  // 4GB arena
   size_t off = 0;
@@ -324,6 +329,12 @@ inline void scan_all() {
   std::snprintf(sum, sizeof(sum), "==== heap scan (end) regions=%d bytes=%llu%s ====\n",
                 regions, static_cast<unsigned long long>(scanned_bytes),
                 capped ? " (CAPPED)" : "");
+#else
+  // Walking the arena regions needs VirtualQuery (Windows-only), and the
+  // scanner has no SEH backstop on Linux -- so skip the scan entirely.
+  char sum[128];
+  std::snprintf(sum, sizeof(sum), "==== heap scan skipped (Windows-only) ====\n");
+#endif
   std::fputs(sum, f);
   std::fflush(f);
 }

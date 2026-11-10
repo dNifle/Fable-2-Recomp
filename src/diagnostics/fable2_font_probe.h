@@ -26,6 +26,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <chrono>
 #include <thread>
 #include <unistd.h>
 #endif
@@ -141,6 +142,7 @@ inline std::atomic<uint32_t>& g_data1() { static std::atomic<uint32_t> v{0}; ret
 inline void vbuf_dump_later(uint8_t* base) {
   bool expect = false;
   if (!vbuf_started().compare_exchange_strong(expect, true)) return;
+#ifdef _WIN32
   CreateThread(nullptr, 0, [](LPVOID b) -> DWORD {
     auto* base = (uint8_t*)b;
     for (int i = 0; i < 600; ++i) {
@@ -187,6 +189,54 @@ inline void vbuf_dump_later(uint8_t* base) {
     }
     return 0;
   }, base, 0, nullptr);
+#else
+  // No CreateThread/Sleep on Linux; run the same dump loop on a std::thread.
+  std::thread([base] {
+    for (int i = 0; i < 600; ++i) {
+      const uint32_t uv0 = g_uv0().load();
+      const uint32_t uv5 = g_uv5().load();
+      if (uv0 != 0 && page_rw((uint64_t)base + uv0)) {
+        // Check if the buffer is filled (non-zero).
+        uint32_t sum = 0;
+        for (int c = 0; c < 24; ++c) sum += load_be(base, (uint32_t)(uv0 + c * 4));
+        if (sum != 0) {
+          log_line("== vbuf filled (uv0=0x%08X uv5=0x%08X)\n", uv0, uv5);
+          char line[400] = {};
+          int off = std::snprintf(line, sizeof(line), "  uv0:");
+          for (int c = 0; c < 48; ++c)
+            off += std::snprintf(line + off, sizeof(line) - off, " %08X",
+                                 load_be(base, (uint32_t)(uv0 + c * 4)));
+          log_line("%s\n", line);
+          if (uv5 != 0 && uv5 != uv0 && page_rw((uint64_t)base + uv5)) {
+            char l2[400] = {};
+            int o2 = std::snprintf(l2, sizeof(l2), "  uv5:");
+            for (int c = 0; c < 48; ++c)
+              o2 += std::snprintf(l2 + o2, sizeof(l2) - o2, " %08X",
+                                  load_be(base, (uint32_t)(uv5 + c * 4)));
+            log_line("%s\n", l2);
+          }
+          // Dump the glyph data (64 bytes) for glyph0 and glyph1 -- these
+          // differ per-character (the font-atlas UV / metrics).
+          for (int d = 0; d < 2; ++d) {
+            const uint32_t gd = (d == 0) ? g_data0().load() : g_data1().load();
+            if (gd != 0 && gd >= 0x40000000u && gd < 0x80000000u &&
+                page_rw((uint64_t)base + gd)) {
+              char gdl[400] = {};
+              int goff = std::snprintf(gdl, sizeof(gdl), "  data%d@0x%08X:", d, gd);
+              for (int c = 0; c < 16; ++c)
+                goff += std::snprintf(gdl + goff, sizeof(gdl) - goff, " %08X",
+                                      load_be(base, (uint32_t)(gd + c * 4)));
+              log_line("%s\n", gdl);
+            }
+          }
+          return 0;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return 0;
+  }).detach();
+#endif
 }
 
 // Scan [lo,hi) page-by-page (fast) for the UTF-16BE string "Press A to

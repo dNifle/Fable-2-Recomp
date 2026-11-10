@@ -48,6 +48,7 @@
 #include <rex/ui/keybinds.h>
 
 #include "fable2_config.h"  // direct_mouse_look toggle
+#include "host_key_state.h"  // fable2::hostkeys (portable key/mouse state)
 #include "mouse_look.h"     // fable2::mouselook (accumulates the mouse delta)
 
 #ifdef _WIN32
@@ -223,14 +224,22 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
  public:
   // InputDriver's constructor is protected, so expose a public one.
   KeyboardGamepadDriver(rex::ui::Window* window, size_t window_z_order)
-      : rex::input::InputDriver(window, window_z_order) {}
+      : rex::input::InputDriver(window, window_z_order) {
+    // Mirror host key/mouse state from the window's input events (no-op on
+    // Win32, which polls GetAsyncKeyState directly). See host_key_state.h.
+    hostkeys::Attach(window, window_z_order);
+  }
 
   ~KeyboardGamepadDriver() override {
+#ifndef _WIN32
+    if (rex::ui::Window* w = GameWindow()) w->SetRelativeMouseMode(false);
+#endif
     if (cursor_hidden_) {
       if (rex::ui::Window* w = GameWindow())
         w->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
       cursor_hidden_ = false;
     }
+    hostkeys::Detach(window());
   }
 
   X_STATUS Setup() override { return X_STATUS_SUCCESS; }
@@ -365,6 +374,82 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
     } else {
       mouse_centered_ = false;  // re-prime on (re)focus to avoid a jump
     }
+#else  // !_WIN32
+    // Portable input path: held keys/buttons and mouse motion come from the
+    // event-mirrored host_key_state.h tracker instead of GetAsyncKeyState,
+    // and mouse look consumes relative-motion deltas (SDL relative-mouse
+    // mode) instead of diffing the cursor position around a per-poll warp.
+    rex::ui::Window* win = GameWindow();
+    bool focused = win != nullptr && win->HasFocus();
+
+    // F5 (host) -> run the external Lua file (fable2_f5_lua.h). Poll per
+    // frame; the actual run happens on the guest main thread via the RunScript
+    // binding probe, so this just latches a flag.
+    fable2::f5lua::poll_f5(focused);
+
+    // Debug-console toggle key (default F4) - see the Win32 branch above.
+    uint16_t unlock_vk = static_cast<uint16_t>(
+        rex::ui::ParseVirtualKey(REXCVAR_GET(mouse_unlock_key)));
+    bool has_unlock_key = unlock_vk != 0;
+    if (focused) {
+      bool unlock_down = has_unlock_key && hostkeys::KeyHeld(unlock_vk);
+      if (unlock_down && !unlock_down_prev_) console_open_ = !console_open_;
+      unlock_down_prev_ = unlock_down;
+    }
+
+    // While the debug menu is open, clicks and typing belong to the menu.
+    if (focused && !console_open_) {
+      for (const auto& m : bindings_) {
+        if (has_unlock_key && m.vk == unlock_vk) continue;  // not gamepad input
+        if (!hostkeys::KeyHeld(m.vk)) continue;  // not held
+        if (m.button != 0) {
+          buttons |= m.button;
+        } else if (m.trigger == 'L') {
+          left_trigger = 0xFF;
+        } else if (m.trigger == 'R') {
+          right_trigger = 0xFF;
+        } else if (m.axis == 1) {
+          lx += m.axis_sign * input_detail::kStickMax;
+        } else if (m.axis == 2) {
+          ly += m.axis_sign * input_detail::kStickMax;
+        }
+      }
+    }
+    // Clamp (opposing keys cancel; two same-direction keys can't exceed it).
+    lx = input_detail::ClampStick(lx);
+    ly = input_detail::ClampStick(ly);
+
+    // Mouse -> right stick (camera look): while looking, the window reports
+    // relative motion (the cursor is hidden and can't hit the screen edge)
+    // and the accumulated per-poll delta is consumed here. Gated on the game
+    // window being focused (alt-tabbing away releases the lock) and on the
+    // debug menu being closed (F4). Fable 2 inverts Y, so mouse-up (dy<0)
+    // maps to +ry (look up).
+    bool looking = focused && REXCVAR_GET(mouse_look) && !console_open_;
+
+    if (looking && !cursor_hidden_) {
+      win->SetRelativeMouseMode(true);
+      win->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
+      cursor_hidden_ = true;
+    } else if (!looking && cursor_hidden_) {
+      if (win) {
+        win->SetRelativeMouseMode(false);
+        win->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
+      }
+      cursor_hidden_ = false;
+    }
+
+    float mdx = 0.0f;
+    float mdy = 0.0f;
+    hostkeys::TakeMouseDelta(mdx, mdy);  // always drained (no stale motion)
+    if (looking && mouse_centered_) {
+      // Map the motion delta onto the right stick. Fable 2 inverts Y, so
+      // mouse-up (dy<0) maps to +ry (look up).
+      const int32_t scale = REXCVAR_GET(mouse_look_scale);
+      rx = input_detail::ClampStick(static_cast<int32_t>(mdx) * scale);
+      ry = input_detail::ClampStick(static_cast<int32_t>(-mdy) * scale);
+    }
+    mouse_centered_ = looking;  // re-prime on (re)focus to avoid a jump
 #endif
 
     out_state->packet_number.set(packet_number_++);
