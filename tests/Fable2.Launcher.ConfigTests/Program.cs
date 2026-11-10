@@ -143,14 +143,15 @@ try
     Console.WriteLine("Graphics options, anti-aliasing and table preservation passed.");
 
     string appXaml = Path.Combine(AppContext.BaseDirectory, "TestData", "App.xaml");
-    XNamespace xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+    // Avalonia XAML namespace; styles are matched by selector (e.g. "TextBlock").
+    XNamespace xamlNamespace = "https://github.com/avaloniaui";
     var styles = XDocument.Load(appXaml).Descendants(xamlNamespace + "Style").ToList();
-    var textStyle = styles.Single(style => (string?)style.Attribute("TargetType") == "TextBlock");
+    var textStyle = styles.Single(style => (string?)style.Attribute("Selector") == "TextBlock");
     Require(!textStyle.Elements(xamlNamespace + "Setter").Any(setter => (string?)setter.Attribute("Property") == "Foreground"),
         "global TextBlock foreground overrides dropdown text inheritance");
     foreach (string control in new[] { "ComboBox", "ComboBoxItem" })
     {
-        var style = styles.Single(style => (string?)style.Attribute("TargetType") == control);
+        var style = styles.Single(style => (string?)style.Attribute("Selector") == control);
         Require(style.Elements(xamlNamespace + "Setter").Any(setter => (string?)setter.Attribute("Property") == "Foreground" && (string?)setter.Attribute("Value") == "#FF172020"), "dropdown foreground regression");
         Require(style.Elements(xamlNamespace + "Setter").Any(setter => (string?)setter.Attribute("Property") == "Background" && (string?)setter.Attribute("Value") == "#FFF3EEE4"), "dropdown background regression");
     }
