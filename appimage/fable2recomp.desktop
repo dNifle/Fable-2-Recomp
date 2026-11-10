@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Fable II (ReXGlue)
+Comment=Fable 2 recompiled for Linux (Vulkan)
+Exec=Fable2Launcher
+Icon=fable2recomp
+Categories=Game;
+Terminal=false

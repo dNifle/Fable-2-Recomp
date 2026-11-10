@@ -1,0 +1,61 @@
+#!/bin/sh
+# Fable 2 ReXGlue - AppImage entry point.
+#
+# The AppImage mount is read-only and ephemeral, but the game and the launcher
+# write next to their own binaries (saves/, cache/, logs/, settings, and the
+# game content extracted from the ISO). So on the first run - and again after
+# the AppImage is updated to a new version - the release payload is copied
+# into a writable folder and everything runs from there, mirroring the
+# "unzip the release anywhere" model of the Windows zip.
+#
+# The copy NEVER touches user data: saves/, cache/, logs/, fable2_config.toml,
+# fable_2.toml, launcher-settings.toml, launcher-game-path.txt and extracted
+# game content (default.xex, data/) are left exactly as they are.
+#
+# Folder selection (first run):
+#   $FABLE2_HOME                                    if set
+#   <AppImage folder>/Fable2Recomp                  if that folder is writable
+#   ${XDG_DATA_HOME:-~/.local/share}/Fable2Recomp   otherwise
+#
+# Usage:
+#   Fable2Recomp.AppImage               run the launcher
+#   Fable2Recomp.AppImage --game [...]  run the game directly (args passed on)
+set -e
+
+APPDIR="$(dirname "$(readlink -f "$0")")"
+PAYLOAD="$APPDIR/usr/share/fable2-recomp"
+IMAGE_PATH="$(readlink -f "${APPIMAGE:-$0}")"
+
+if [ -n "${FABLE2_HOME:-}" ]; then
+  DIR="$FABLE2_HOME"
+else
+  IMAGE_DIR="$(dirname "$IMAGE_PATH")"
+  if [ -w "$IMAGE_DIR" ]; then
+    DIR="$IMAGE_DIR/Fable2Recomp"
+  else
+    DIR="${XDG_DATA_HOME:-$HOME/.local/share}/Fable2Recomp"
+  fi
+fi
+
+VERSION="$(cat "$PAYLOAD/appimage-version.txt")"
+mkdir -p "$DIR"
+if [ "$(cat "$DIR/.appimage-version" 2>/dev/null)" != "$VERSION" ]; then
+  echo "Fable 2 ReXGlue $VERSION: setting up $DIR"
+  cp -f "$PAYLOAD/fable_2" "$PAYLOAD/Fable2Launcher" \
+        "$PAYLOAD/librexruntime.so" "$PAYLOAD/librexgpu-xenos.so" \
+        "$PAYLOAD/fable2_build.json" "$PAYLOAD/app-icon.png" \
+        "$PAYLOAD/README.md" "$DIR/"
+  mkdir -p "$DIR/licenses" "$DIR/data/scripts/recomp"
+  cp -rf "$PAYLOAD/licenses/." "$DIR/licenses/"
+  cp -rf "$PAYLOAD/data/scripts/recomp/." "$DIR/data/scripts/recomp/"
+  # The config templates are user data: seed once, never overwrite.
+  [ -f "$DIR/fable2_config.toml" ] || cp -f "$PAYLOAD/fable2_config.toml" "$DIR/"
+  chmod +x "$DIR/fable_2" "$DIR/Fable2Launcher"
+  echo "$VERSION" > "$DIR/.appimage-version"
+fi
+
+if [ "${1:-}" = "--game" ]; then
+  shift
+  exec "$DIR/fable_2" "$@"
+fi
+exec "$DIR/Fable2Launcher" "$@"

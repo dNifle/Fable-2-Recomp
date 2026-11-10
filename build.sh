@@ -33,12 +33,12 @@ case "${1:-}" in
         exec "$ROOT/launcher/build-launcher.sh"
         ;;
     launcher-dev)
-        exec "$ROOT/launcher/build-launcher.sh" dev
+        exec "$ROOT/launcher/build-launcher.sh" all dev
         ;;
     package)
         "$0" -release fable_2
-        "$ROOT/launcher/build-launcher.sh"
-        exec python3 "$ROOT/tools/package_release.py"
+        "$ROOT/launcher/build-launcher.sh" linux
+        exec "$ROOT/tools/package_appimage.sh"
         ;;
 esac
 

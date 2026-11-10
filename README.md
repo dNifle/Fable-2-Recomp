@@ -10,12 +10,14 @@ Recompilation of Fable 2 (Xbox 360, title ID 4D5307F1) using the [ReXGlue SDK](h
 
 You need your own Fable 2 GOTY disc image (`.iso`) and about 7 GB of free space.
 
-1. Download the `windows` zip from the [latest release](https://github.com/himdo/Fable-2-Recomp/releases/latest) and unzip it anywhere.
-2. Open `Fable2Launcher.exe` (on Linux: `Fable2Launcher`).
+1. Get the [latest release](https://github.com/himdo/Fable-2-Recomp/releases/latest):
+   **Windows** — download the `windows` zip and unzip it anywhere.
+   **Linux** — download the `.AppImage`, put it anywhere and make it executable (`chmod +x`). The first run creates a `Fable2Recomp` folder next to it holding the game and launcher.
+2. Open `Fable2Launcher.exe` (on Linux: the AppImage, or `Fable2Launcher` inside the `Fable2Recomp` folder).
 3. Click **Extract from ISO** and pick your `.iso`. The game files go into the launcher's folder.
 4. Click **Play Fable II**.
 
-**Updating:** unzip the new release into its own folder, copy your `saves` folder across and extract your `.iso` again.
+**Updating:** Windows — unzip the new release into its own folder, copy your `saves` folder across and extract your `.iso` again. Linux — run the new AppImage; it refreshes the `Fable2Recomp` folder in place, keeping your `saves` and settings.
 
 **Need help?** Ask on the [Discord](https://discord.gg/8TQUZpPNeR). To compile the game yourself, see [Building](#building).
 
@@ -37,8 +39,8 @@ Original GOTY USA/Europe and German GOTY dumps are supported by the default
 
 [ ] Increased performance / framerate\
 [x] Hero / Dog Texture bug fix (upstream renderer, verified on German GOTY)\
-[ ] Vulkan support\
-[ ] Linux Builds\
+[x] Vulkan support (the only renderer on Linux; launch-swappable on Windows)\
+[x] Linux Builds (`build.sh` + AppImage release; see [Building](#building))\
 [x] Custom commands to aid in debugging\
 [ ] Improved Graphics rendering\
 [ ] Custom menu(s) / modifying menus for extra functionality (like closing the game)\
@@ -496,6 +498,31 @@ build.cmd <target>      # any other CMake target
 build.cmd -release [t]  # build as Release (-O3) instead of Debug (-r is short form)
 ```
 
+### Linux
+
+```
+./build.sh               # configure + fable_2_codegen (runs rexglue codegen on the manifest)
+./build.sh fable_2       # configure + build the full executable
+./build.sh launcher      # build the launcher (Linux + Windows publish)
+./build.sh <target>      # any other CMake target
+./build.sh -release [t]  # build as Release (-O3) instead of Debug (-r is short form)
+./build.sh package       # Release game + launcher + the AppImage in out/dist
+```
+
+Prerequisites: **clang 18+** (the SDK requires it; GCC cannot compile the
+generated code), **CMake** ≥ 3.25, **Ninja**, **Python 3**, **Git**, and the
+X11/Wayland development headers (`libx11-dev`, `libxkbcommon-dev`,
+`libwayland-dev` and friends — SDL3's Linux backends). Game content
+(`default.xex`) is required for codegen exactly as on Windows.
+`build.sh` mirrors `build.cmd`: it builds the pinned SDK from source with the
+**Vulkan** backend — the only renderer on non-Windows — into
+`out/tooling/runtime-sdk[-debug]/linux-amd64`, then drives the
+`linux-amd64-*` presets. Local SDK fixes for Linux live in
+`thirdparty/rexglue-sdk-linux.patch` and are applied automatically. Debug and
+Release stage `librexruntimed.so`/`librexgpu-xenosd.so` and
+`librexruntime.so`/`librexgpu-xenos.so` respectively, with the same Debug-is-
+slower caveat as above.
+
 Both Debug and Release build the pinned, patched SDK from source, and a first Debug
 build also builds the Release SDK because only that one ships the codegen tool; see
 [runtime build requirements](docs/RUNTIME_FIXES.md). Game content is required
@@ -531,13 +558,20 @@ The build also accepts explicit overrides if you keep the SDK elsewhere:
 ## Packaging a release
 
 ```
-build.cmd package
+build.cmd package       # Windows: player zip + symbols zip + SHA256SUMS in out\dist
+build.sh package        # Linux: AppImage + SHA256SUMS in out/dist
 ```
 
-This builds the Release game and the launcher, then writes the player zip, a
-separate zip of debug symbols and `SHA256SUMS` to `out\dist`. The version comes
-from `git describe --tags`, so build from a release tag. Only the files listed
-in `tools/package_release.py` are packaged, so game files, saves and logs stay out.
+Both build the Release game and the launcher first. The version comes from
+`git describe --tags`, so build from a release tag. Only the files listed in
+`tools/package_release.py` (Windows) / `tools/package_appimage.sh` (Linux) are
+packaged, so game files, saves and logs stay out. Linux additionally needs
+`appimagetool` and `mksquashfs` (the `squashfs-tools` package) on PATH. The
+AppImage is self-contained (game binary, launcher, SDK runtime/plugin): the
+first run creates a writable `Fable2Recomp` folder next to it and runs from
+there — the AppImage mount itself is read-only — and later runs refresh that
+folder on version changes without touching saves or settings (see
+`appimage/AppRun`).
 
 ## Vulkan renderer
 
