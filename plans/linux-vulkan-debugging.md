@@ -44,6 +44,17 @@ main-loop hook:
 - Optional on-screen overlay (`perf_overlay` cvar).
 - Debug builds: `perf` command on the remote-control TCP channel.
 
+IMPORTANT (learned the hard way): the display numbers cover a sliding 2 s
+window. The earlier whole-ring average was poisoned by loading screens and
+menus (30 fps) and understated the ~60 fps gameplay - do not draw
+conclusions about the game's pacing from session averages. At the 30 fps of
+loading screens/menus a 33 ms hitch threshold flags ordinary pacing frames;
+use 50 for gameplay.
+
+DO NOT enable `high_tick_rate` / `higher_hf_tick_rate` in fable2_config.toml
+on this build (2026-11-11): enabling both produced a stuck white screen at
+launch. They are off in the maintainer's config on purpose.
+
 ## 3. Stutters (ROOT CAUSE FOUND, FIX LANDED)
 
 The "small stutters from time to time" correlate 1:1 with runtime
