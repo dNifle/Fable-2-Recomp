@@ -517,8 +517,9 @@ X11/Wayland development headers (`libx11-dev`, `libxkbcommon-dev`,
 `build.sh` mirrors `build.cmd`: it builds the pinned SDK from source with the
 **Vulkan** backend — the only renderer on non-Windows — into
 `out/tooling/runtime-sdk[-debug]/linux-amd64`, then drives the
-`linux-amd64-*` presets. Local SDK fixes for Linux live in
-`thirdparty/rexglue-sdk-linux.patch` and are applied automatically. Debug and
+`linux-amd64-*` presets. The pinned SDK commit (the `dNifle/rexglue-sdk`
+fork) carries the Linux fixes (the Linux compile fix and the persistent
+Vulkan pipeline cache). Debug and
 Release stage `librexruntimed.so`/`librexgpu-xenosd.so` and
 `librexruntime.so`/`librexgpu-xenos.so` respectively, with the same Debug-is-
 slower caveat as above.
