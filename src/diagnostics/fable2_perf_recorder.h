@@ -31,10 +31,12 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -47,6 +49,9 @@
 #include <rex/logging/macros.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
+#include <rex/ui/keybinds.h>
+
+#include "host_key_state.h"  // fable2::hostkeys (portable key state)
 
 REXCVAR_DEFINE_INT32(perf_hitch_ms, 50, "Perf",
                      "Frame time in milliseconds at which the frame-time "
@@ -56,6 +61,12 @@ REXCVAR_DEFINE_INT32(perf_hitch_ms, 50, "Perf",
 REXCVAR_DEFINE_BOOL(perf_overlay, false, "Perf",
                     "Draw the frame-time overlay (avg FPS, 1% / 0.1% lows, "
                     "frame time, hitches) in the top-left corner.");
+REXCVAR_DEFINE_STRING(perf_capture_key, "F6", "Perf",
+                      "Host key that starts/stops a captured frame-time "
+                      "recording. Start clears the recorder, stop writes "
+                      "perf_capture_<time>.csv next to the game and logs the "
+                      "summary - so loading screens stay out of the captured "
+                      "segment.");
 
 namespace fable2::perfrec {
 
@@ -149,6 +160,27 @@ inline Writer& W() {
 inline std::mutex& mu() { static std::mutex m; return m; }
 inline Snapshot& published() { static Snapshot s; return s; }  // caller holds mu()
 
+// Capture segments (perf_capture_key / `f2 perf record`): recording runs
+// continuously so the overlay and report always have data, but a capture
+// scopes a clean segment - start clears the recorder, stop writes a CSV and
+// logs the summary, so loading screens stay out of the captured span.
+inline std::atomic<bool>& capture_active() {
+  static std::atomic<bool> b{false};
+  return b;
+}
+inline std::atomic<int>& capture_count() {
+  static std::atomic<int> n{0};
+  return n;
+}
+// Where capture CSVs land (set from the console's game root; falls back to the
+// working directory when never set).
+inline std::filesystem::path& dump_root() {
+  static std::filesystem::path p;
+  return p;
+}
+// Defined below (next to capture_toggle, which needs dump_csv/report).
+inline void poll_capture_key();
+
 // A copy of the published stats; safe from any thread (overlay, remote `perf`).
 inline Snapshot snapshot() {
   std::lock_guard<std::mutex> lock(mu());
@@ -230,6 +262,7 @@ inline void publish_stats() {
 // Record one frame. Guest main thread only (called from the MainRenderLoop
 // hook); the first call just primes the clock.
 inline void on_frame() {
+  poll_capture_key();  // perf_capture_key starts/stops capture segments
   Writer& w = W();
   const Clock::time_point now = Clock::now();
   if (!w.primed) {
@@ -341,6 +374,54 @@ inline void reset() {
   publish_stats();
 }
 
+// Start/stop a capture segment (perf_capture_key, or `f2 perf record`).
+inline void capture_toggle() {
+  if (capture_active().load()) {
+    capture_active().store(false);
+    const int n = ++capture_count();
+    char name[64];
+    const std::time_t now = std::time(nullptr);
+    std::tm tm_buf{};
+#ifdef _WIN32
+    localtime_s(&tm_buf, &now);
+#else
+    localtime_r(&now, &tm_buf);
+#endif
+    std::strftime(name, sizeof(name), "perf_capture_%Y%m%d_%H%M%S.csv", &tm_buf);
+    const std::filesystem::path path =
+        dump_root().empty() ? std::filesystem::absolute(name) : dump_root() / name;
+    const int64_t rows = dump_csv(path);
+    if (rows < 0) {
+      REXSYS_WARN("[perf] capture #{} stopped, but {} could not be written", n,
+                  path.string());
+    } else {
+      REXSYS_WARN("[perf] capture #{} stopped: {} frames -> {}", n, rows,
+                  path.string());
+    }
+    REXSYS_WARN("[perf] capture summary:\n{}", report());
+  } else {
+    reset();  // clean segment: only frames captured from here count
+    capture_active().store(true);
+    REXSYS_WARN("[perf] capture started - press the capture key again to stop");
+  }
+}
+
+// Polled once per frame from on_frame(). Guest main thread.
+inline void poll_capture_key() {
+  static bool prev = false;
+  static std::string cached;
+  static uint16_t vk = 0;
+  const std::string text = REXCVAR_GET(perf_capture_key);
+  if (text != cached) {
+    cached = text;
+    vk = static_cast<uint16_t>(rex::ui::ParseVirtualKey(cached));
+  }
+  const bool down = vk != 0 && hostkeys::KeyHeld(vk) && hostkeys::GameWindowFocused();
+  const bool edge = down && !prev;
+  prev = down;
+  if (edge) capture_toggle();
+}
+
 // The overlay: frame-time numbers top-left, drawn over the guest frame while
 // perf_overlay is on. Same self-retaining shape as fable2_deadbeef_overlay.h
 // (drawn from the foreground draw list, no guest text involved).
@@ -360,9 +441,10 @@ class PerfOverlayDialog : public rex::ui::ImGuiDialog {
     const double low01 = s.p999_ms > 0.0 ? 1000.0 / s.p999_ms : 0.0;
     char buf[320];
     std::snprintf(buf, sizeof(buf),
-                  "perf  %.1f fps (last 2 s)   1%% low %.1f  0.1%% low %.1f\n"
+                  "%sperf  %.1f fps (last 2 s)   1%% low %.1f  0.1%% low %.1f\n"
                   "frame %.2f ms avg  %.2f med  %.2f max\n"
                   "session avg %.1f fps over %llu frames  hitches %llu (>= %d ms)",
+                  capture_active().load() ? "[REC] " : "",
                   s.avg_fps, low1, low01, s.avg_ms, s.median_ms, s.max_ms,
                   s.session_avg_fps, static_cast<unsigned long long>(s.frames),
                   static_cast<unsigned long long>(s.hitches),

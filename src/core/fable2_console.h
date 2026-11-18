@@ -164,7 +164,12 @@ inline State& S() {
   return s;
 }
 
-inline void set_root(const fs::path& p) { S().root = p; }
+inline void set_root(const fs::path& p) {
+  S().root = p;
+  // Capture CSVs (perf record / perf_capture_key) land next to the game's
+  // other output, like the console's own files.
+  fable2::perfrec::dump_root() = p;
+}
 
 inline bool enabled() {
   static const int env = [] {
@@ -894,9 +899,9 @@ inline bool run_host_command(const std::string& line, uint8_t* base) {
     return true;
   }
   if (name == "perf") {
-    // perf [report|reset|dump [path]|overlay on|off]: frame-time statistics
-    // from the always-on recorder in fable2_perf_recorder.h (runs on this
-    // thread, the game thread, so reset/dump touch the ring lock-free).
+    // perf [report|reset|record|dump [path]|overlay on|off]: frame-time
+    // statistics from the always-on recorder in fable2_perf_recorder.h (runs
+    // on this thread, the game thread, so reset/dump touch the ring lock-free).
     const std::string sub = W.size() > 1 ? W[1] : "report";
     if (sub == "report" || sub == "stats") {
       std::istringstream rs(fable2::perfrec::report());
@@ -907,6 +912,14 @@ inline bool run_host_command(const std::string& line, uint8_t* base) {
     if (sub == "reset") {
       fable2::perfrec::reset();
       out("perf", "cleared (recording continues)");
+      return true;
+    }
+    if (sub == "record") {
+      // Same as the perf_capture_key hotkey: toggles a captured segment.
+      fable2::perfrec::capture_toggle();
+      out("perf", fable2::perfrec::capture_active().load()
+                      ? "capture started - perf record again to stop"
+                      : "capture stopped");
       return true;
     }
     if (sub == "dump") {
@@ -929,7 +942,7 @@ inline bool run_host_command(const std::string& line, uint8_t* base) {
       out("perf", std::string("perf_overlay = ") + rex::cvar::GetFlagByName("perf_overlay"));
       return true;
     }
-    out("perf", "usage: perf [report|reset|dump [path]|overlay on|off]", true);
+    out("perf", "usage: perf [report|reset|record|dump [path]|overlay on|off]", true);
     return true;
   }
 
