@@ -51,8 +51,6 @@
 #include <rex/ui/imgui_drawer.h>
 #include <rex/ui/keybinds.h>
 
-#include "host_key_state.h"  // fable2::hostkeys (portable key state)
-
 REXCVAR_DEFINE_INT32(perf_hitch_ms, 50, "Perf",
                      "Frame time in milliseconds at which the frame-time "
                      "recorder counts a hitch (f2 perf report / overlay). "
@@ -61,12 +59,6 @@ REXCVAR_DEFINE_INT32(perf_hitch_ms, 50, "Perf",
 REXCVAR_DEFINE_BOOL(perf_overlay, false, "Perf",
                     "Draw the frame-time overlay (avg FPS, 1% / 0.1% lows, "
                     "frame time, hitches) in the top-left corner.");
-REXCVAR_DEFINE_STRING(perf_capture_key, "F6", "Perf",
-                      "Host key that starts/stops a captured frame-time "
-                      "recording. Start clears the recorder, stop writes "
-                      "perf_capture_<time>.csv next to the game and logs the "
-                      "summary - so loading screens stay out of the captured "
-                      "segment.");
 
 namespace fable2::perfrec {
 
@@ -160,7 +152,7 @@ inline Writer& W() {
 inline std::mutex& mu() { static std::mutex m; return m; }
 inline Snapshot& published() { static Snapshot s; return s; }  // caller holds mu()
 
-// Capture segments (perf_capture_key / `f2 perf record`): recording runs
+// Capture segments (bind_perf_capture key / "f2 perf record"): recording runs
 // continuously so the overlay and report always have data, but a capture
 // scopes a clean segment - start clears the recorder, stop writes a CSV and
 // logs the summary, so loading screens stay out of the captured span.
@@ -178,8 +170,25 @@ inline std::filesystem::path& dump_root() {
   static std::filesystem::path p;
   return p;
 }
-// Defined below (next to capture_toggle, which needs dump_csv/report).
-inline void poll_capture_key();
+// Set from the keybind callback (UI thread), consumed by on_frame() on the
+// guest main thread so all ring access stays single-threaded.
+inline std::atomic<bool>& capture_toggle_request() {
+  static std::atomic<bool> b{false};
+  return b;
+}
+// Steady-clock ms until which the overlay shows the capture state change,
+// even when perf_overlay is off (feedback for the key press).
+inline std::atomic<int64_t>& capture_flash_until_ms() {
+  static std::atomic<int64_t> t{0};
+  return t;
+}
+inline std::atomic<bool>& capture_flash_stopped() {
+  static std::atomic<bool> b{false};
+  return b;
+}
+// Defined below (capture_toggle needs dump_csv/report).
+inline void capture_toggle();
+inline void register_capture_bind();
 
 // A copy of the published stats; safe from any thread (overlay, remote `perf`).
 inline Snapshot snapshot() {
@@ -262,7 +271,9 @@ inline void publish_stats() {
 // Record one frame. Guest main thread only (called from the MainRenderLoop
 // hook); the first call just primes the clock.
 inline void on_frame() {
-  poll_capture_key();  // perf_capture_key starts/stops capture segments
+  if (capture_toggle_request().exchange(false, std::memory_order_relaxed)) {
+    capture_toggle();  // bind key (bind_perf_capture) or `f2 perf record`
+  }
   Writer& w = W();
   const Clock::time_point now = Clock::now();
   if (!w.primed) {
@@ -374,10 +385,16 @@ inline void reset() {
   publish_stats();
 }
 
-// Start/stop a capture segment (perf_capture_key, or `f2 perf record`).
+// Start/stop a capture segment (the bind_perf_capture key, or "f2 perf record").
 inline void capture_toggle() {
+  const int64_t flash_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               Clock::now().time_since_epoch())
+                               .count() +
+                           4000;
   if (capture_active().load()) {
     capture_active().store(false);
+    capture_flash_stopped().store(true);
+    capture_flash_until_ms().store(flash_ms);
     const int n = ++capture_count();
     char name[64];
     const std::time_t now = std::time(nullptr);
@@ -402,24 +419,23 @@ inline void capture_toggle() {
   } else {
     reset();  // clean segment: only frames captured from here count
     capture_active().store(true);
+    capture_flash_stopped().store(false);
+    capture_flash_until_ms().store(flash_ms);
     REXSYS_WARN("[perf] capture started - press the capture key again to stop");
   }
 }
 
-// Polled once per frame from on_frame(). Guest main thread.
-inline void poll_capture_key() {
-  static bool prev = false;
-  static std::string cached;
-  static uint16_t vk = 0;
-  const std::string text = REXCVAR_GET(perf_capture_key);
-  if (text != cached) {
-    cached = text;
-    vk = static_cast<uint16_t>(rex::ui::ParseVirtualKey(cached));
-  }
-  const bool down = vk != 0 && hostkeys::KeyHeld(vk) && hostkeys::GameWindowFocused();
-  const bool edge = down && !prev;
-  prev = down;
-  if (edge) capture_toggle();
+// Registered once (from register_overlay): the capture key rides the SDK's
+// bind system - the same proven path as the F3 debug overlay - so it works
+// wherever those binds do, and is rebindable through the bind's own cvar
+// (bind_perf_capture). The callback runs on the UI thread and only flips a
+// flag; the actual toggle happens on the guest main thread in on_frame().
+inline void register_capture_bind() {
+  rex::ui::RegisterBind(
+      "bind_perf_capture", "F6",
+      "Start/stop a captured frame-time recording (per-frame times + hitches "
+      "to a CSV; starting clears the recorder for a clean segment)",
+      []() { capture_toggle_request().store(true, std::memory_order_relaxed); });
 }
 
 // The overlay: frame-time numbers top-left, drawn over the guest frame while
@@ -432,23 +448,46 @@ class PerfOverlayDialog : public rex::ui::ImGuiDialog {
  protected:
   void OnDraw(ImGuiIO& io) override {
     (void)io;
-    if (!REXCVAR_GET(perf_overlay)) return;
+    // The capture start/stop flash draws even with the overlay off (feedback
+    // for the key press) for 4 s after the toggle.
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               Clock::now().time_since_epoch())
+                               .count();
+    const bool flash = now_ms < capture_flash_until_ms().load(std::memory_order_relaxed);
+    const char* flash_msg =
+        capture_flash_stopped().load(std::memory_order_relaxed)
+            ? "CAPTURE STOPPED - CSV written to the game folder"
+            : "CAPTURE STARTED - press the capture key again to stop";
+    if (!REXCVAR_GET(perf_overlay)) {
+      if (!flash) return;
+      ImDrawList* dl_flash = ImGui::GetForegroundDrawList();
+      if (!dl_flash) return;
+      const ImVec2 fpos(8.0f, 8.0f);
+      const ImVec2 fsize = ImGui::CalcTextSize(flash_msg);
+      dl_flash->AddRectFilled(ImVec2(fpos.x - 4.0f, fpos.y - 4.0f),
+                              ImVec2(fpos.x + fsize.x + 4.0f, fpos.y + fsize.y + 4.0f),
+                              IM_COL32(0, 0, 0, 200));
+      dl_flash->AddText(ImGui::GetFont(), ImGui::GetFontSize(), fpos,
+                        IM_COL32(255, 220, 80, 255), flash_msg);
+      return;
+    }
     const Snapshot s = snapshot();
     if (s.frames == 0) return;
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     if (!dl) return;
     const double low1 = s.p99_ms > 0.0 ? 1000.0 / s.p99_ms : 0.0;
     const double low01 = s.p999_ms > 0.0 ? 1000.0 / s.p999_ms : 0.0;
-    char buf[320];
+    char buf[384];
     std::snprintf(buf, sizeof(buf),
                   "%sperf  %.1f fps (last 2 s)   1%% low %.1f  0.1%% low %.1f\n"
                   "frame %.2f ms avg  %.2f med  %.2f max\n"
-                  "session avg %.1f fps over %llu frames  hitches %llu (>= %d ms)",
+                  "session avg %.1f fps over %llu frames  hitches %llu (>= %d ms)%s%s",
                   capture_active().load() ? "[REC] " : "",
                   s.avg_fps, low1, low01, s.avg_ms, s.median_ms, s.max_ms,
                   s.session_avg_fps, static_cast<unsigned long long>(s.frames),
                   static_cast<unsigned long long>(s.hitches),
-                  static_cast<int>(REXCVAR_GET(perf_hitch_ms)));
+                  static_cast<int>(REXCVAR_GET(perf_hitch_ms)),
+                  flash ? "\n" : "", flash ? flash_msg : "");
     const ImVec2 pos(8.0f, 8.0f);
     const ImVec2 size = ImGui::CalcTextSize(buf);
     dl->AddRectFilled(ImVec2(pos.x - 4.0f, pos.y - 4.0f),
@@ -462,6 +501,7 @@ class PerfOverlayDialog : public rex::ui::ImGuiDialog {
 // Called from Fable2App::OnCreateDialogs (fable_2_app.h) to register the
 // overlay; the dialog retains itself, like the deadbeef one.
 inline void register_overlay(rex::ui::ImGuiDrawer* drawer) {
+  register_capture_bind();
   (void)new PerfOverlayDialog(drawer);  // dialog retains itself
 }
 inline void register_overlay(rex::ui::ImGuiDrawer& drawer) { register_overlay(&drawer); }

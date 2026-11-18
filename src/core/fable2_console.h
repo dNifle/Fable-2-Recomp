@@ -166,7 +166,7 @@ inline State& S() {
 
 inline void set_root(const fs::path& p) {
   S().root = p;
-  // Capture CSVs (perf record / perf_capture_key) land next to the game's
+  // Capture CSVs (perf record / bind_perf_capture) land next to the game's
   // other output, like the console's own files.
   fable2::perfrec::dump_root() = p;
 }
@@ -915,7 +915,7 @@ inline bool run_host_command(const std::string& line, uint8_t* base) {
       return true;
     }
     if (sub == "record") {
-      // Same as the perf_capture_key hotkey: toggles a captured segment.
+      // Same as the bind_perf_capture hotkey: toggles a captured segment.
       fable2::perfrec::capture_toggle();
       out("perf", fable2::perfrec::capture_active().load()
                       ? "capture started - perf record again to stop"
